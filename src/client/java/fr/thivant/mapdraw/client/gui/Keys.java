@@ -71,6 +71,14 @@ public final class Keys {
 		return ctrl(event) && (c == 'y' || (c == 'z' && shift(event)));
 	}
 
+	public static boolean isBackspace(KeyEvent event) {
+		return event.key() == SDLScancode.SDL_SCANCODE_BACKSPACE;
+	}
+
+	public static boolean isEnter(KeyEvent event) {
+		return event.key() == SDLScancode.SDL_SCANCODE_RETURN || event.key() == SDLScancode.SDL_SCANCODE_KP_ENTER;
+	}
+
 	public static boolean isEscape(KeyEvent event) {
 		return event.key() == SDLScancode.SDL_SCANCODE_ESCAPE;
 	}

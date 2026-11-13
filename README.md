@@ -91,6 +91,9 @@ Les raccourcis suivent la disposition du clavier : `Ctrl+Z` fonctionne aussi en 
 - **Main levée** : clic gauche maintenu.
 - **Ligne droite** : un clic sur le départ, un clic sur l'arrivée, avec aperçu entre les deux. Le clic droit annule.
 - **Gomme** : efface les blocs du calque actif.
+- **Rectangle** et **Cercle / ellipse** : un clic sur un coin, un clic sur le coin opposé (aperçu en direct, clic droit : annuler).
+- **Polygone** : un clic par sommet ; pour fermer, recliquer le premier point, faire un clic droit ou appuyer sur Entrée. Retour arrière retire le dernier point.
+- **Formes : surface teintée / contour seul** : en mode surface, l'intérieur est teinté (translucide sur la carte, plaque fine posée au sol dans le monde) et le contour reste net. Idéal pour placer des maisons, des parcelles, des quartiers.
 - **Couleur** : palette de 12 couleurs ou code hexadécimal (`#E53935`).
 - **Épaisseur** : de 1 à 5 blocs, avec un pinceau carré.
 
@@ -101,6 +104,7 @@ Chaque point est converti en coordonnées de bloc entières. Les segments sont r
 - Le `●` à gauche affiche ou masque le calque. Le masquage est local et ne supprime rien, y compris pour les calques des autres joueurs.
 - Un clic sur le nom rend le calque actif.
 - **Nouveau / Renommer** utilisent le champ texte sous la liste.
+- **Calque dans le monde : visible / caché** : le calque reste sur la carte mais n'apparaît plus dans le monde (réglage personnel). Marqué « (carte) » dans la liste.
 - **Partager / Rendre privé** : réservé au propriétaire, et seulement si le serveur a le mod.
 - **Supprimer** et **Tout effacer** demandent une confirmation. « Tout effacer » peut être annulé avec `Ctrl+Z`.
 - **Exporter** crée un `.json` dans `config/mapdraw/exports/`. **Importer** recrée ce calque comme calque privé dans la dimension actuelle. Ça sert de secours quand le serveur n'a pas le mod.

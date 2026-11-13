@@ -1,10 +1,17 @@
 package fr.thivant.mapdraw.client;
 
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import fr.thivant.mapdraw.core.CellKey;
+import fr.thivant.mapdraw.core.CellValue;
 import fr.thivant.mapdraw.core.LayerData;
 import fr.thivant.mapdraw.core.Raster;
+import fr.thivant.mapdraw.core.Shapes;
 
 /**
  * Outils de dessin partagés par l'écran MapDraw et l'intégration JourneyMap.
@@ -12,14 +19,23 @@ import fr.thivant.mapdraw.core.Raster;
  */
 public final class DrawTools {
 	public enum Tool {
-		FREEHAND("Main levée"),
-		LINE("Ligne droite"),
-		ERASER("Gomme");
+		FREEHAND("Main levée", "Main"),
+		LINE("Ligne droite", "Ligne"),
+		ERASER("Gomme", "Gomme"),
+		RECTANGLE("Rectangle", "Rect."),
+		ELLIPSE("Cercle / ellipse", "Cercle"),
+		POLYGON("Polygone", "Polyg.");
 
 		public final String label;
+		public final String shortLabel;
 
-		Tool(String label) {
+		Tool(String label, String shortLabel) {
 			this.label = label;
+			this.shortLabel = shortLabel;
+		}
+
+		public boolean isShape() {
+			return this == RECTANGLE || this == ELLIPSE || this == POLYGON;
 		}
 	}
 
@@ -34,7 +50,9 @@ public final class DrawTools {
 	private boolean stroking;
 	private int lastX;
 	private int lastZ;
-	private Long lineStart;
+	/** Point de départ (ligne) ou coin (rectangle, ellipse). */
+	private Long anchor;
+	private final List<Long> polygon = new ArrayList<>();
 
 	public DrawTools(LayerManager layers) {
 		this.layers = layers;
@@ -47,7 +65,8 @@ public final class DrawTools {
 	public void setTool(Tool tool) {
 		endStroke();
 		this.tool = tool;
-		this.lineStart = null;
+		this.anchor = null;
+		this.polygon.clear();
 	}
 
 	public int color() {
@@ -68,12 +87,42 @@ public final class DrawTools {
 		ClientConfig.get().save();
 	}
 
+	/** Formes : intérieur teinté (surface) ou contour seul. */
+	public boolean filled() {
+		return ClientConfig.get().fillShapes;
+	}
+
+	public void setFilled(boolean filled) {
+		ClientConfig.get().fillShapes = filled;
+		ClientConfig.get().save();
+	}
+
 	public Long lineStart() {
-		return lineStart;
+		return anchor;
+	}
+
+	public List<Long> polygonPoints() {
+		return Collections.unmodifiableList(polygon);
+	}
+
+	/** Une forme ou une ligne est en cours de construction. */
+	public boolean hasPending() {
+		return anchor != null || !polygon.isEmpty();
 	}
 
 	public boolean isStroking() {
 		return stroking;
+	}
+
+	/** Consigne affichée pendant la construction d'une forme, ou null. */
+	public String hint() {
+		return switch (tool) {
+			case LINE -> anchor != null ? "Ligne : cliquez le point d'arrivée (clic droit : annuler)" : null;
+			case RECTANGLE, ELLIPSE -> anchor != null ? "Cliquez le coin opposé (clic droit : annuler)" : null;
+			case POLYGON -> polygon.isEmpty() ? null
+					: "Polygone : " + polygon.size() + " point(s) – cliquez le 1er point ou clic droit pour fermer, Retour arrière : enlever un point";
+			default -> null;
+		};
 	}
 
 	/**
@@ -88,15 +137,32 @@ public final class DrawTools {
 			return false;
 		}
 
+		long here = CellKey.pack(x, z);
+
 		switch (tool) {
 			case LINE -> {
-				if (lineStart == null) {
-					lineStart = CellKey.pack(x, z);
+				if (anchor == null) {
+					anchor = here;
 				} else {
 					layers.beginAction(layer.meta().id());
-					layers.paint(Raster.thickLine(CellKey.x(lineStart), CellKey.z(lineStart), x, z, width()), color());
+					layers.paint(Raster.thickLine(CellKey.x(anchor), CellKey.z(anchor), x, z, width()), CellValue.line(color()));
 					layers.endAction();
-					lineStart = null;
+					anchor = null;
+				}
+			}
+			case RECTANGLE, ELLIPSE -> {
+				if (anchor == null) {
+					anchor = here;
+				} else {
+					commit(layer, shapeTo(x, z));
+					anchor = null;
+				}
+			}
+			case POLYGON -> {
+				if (polygon.size() >= 3 && near(polygon.get(0), x, z)) {
+					finishPolygon(dimension);
+				} else if (polygon.isEmpty() || polygon.get(polygon.size() - 1) != here) {
+					polygon.add(here);
 				}
 			}
 			case FREEHAND, ERASER -> {
@@ -109,6 +175,69 @@ public final class DrawTools {
 		}
 
 		return true;
+	}
+
+	private static boolean near(long point, int x, int z) {
+		return Math.abs(CellKey.x(point) - x) <= 1 && Math.abs(CellKey.z(point) - z) <= 1;
+	}
+
+	/** Ferme et trace le polygone en cours (clic droit ou Entrée). */
+	public boolean finishPolygon(String dimension) {
+		if (tool != Tool.POLYGON || polygon.size() < 3) {
+			return false;
+		}
+
+		LayerData layer = layers.ensureEditableActive(dimension);
+
+		if (layer != null) {
+			if (filled() && Shapes.boundingArea(polygon) > Shapes.MAX_FILL) {
+				layers.info("Forme trop grande (max " + Shapes.MAX_FILL + " blocs).");
+			} else {
+				commit(layer, Shapes.polygon(new ArrayList<>(polygon), width(), filled()));
+			}
+		}
+
+		polygon.clear();
+		return true;
+	}
+
+	/** Retire le dernier point du polygone. */
+	public boolean removeLastPoint() {
+		if (tool == Tool.POLYGON && !polygon.isEmpty()) {
+			polygon.remove(polygon.size() - 1);
+			return true;
+		}
+
+		return false;
+	}
+
+	private Shapes.Shape shapeTo(int x, int z) {
+		int ax = CellKey.x(anchor);
+		int az = CellKey.z(anchor);
+
+		if (filled() && Shapes.rectangleArea(ax, az, x, z) > Shapes.MAX_FILL) {
+			return null;
+		}
+
+		return tool == Tool.ELLIPSE
+				? Shapes.ellipse(ax, az, x, z, width(), filled())
+				: Shapes.rectangle(ax, az, x, z, width(), filled());
+	}
+
+	private void commit(LayerData layer, Shapes.Shape shape) {
+		if (shape == null) {
+			layers.info("Forme trop grande (max " + Shapes.MAX_FILL + " blocs).");
+			return;
+		}
+
+		layers.beginAction(layer.meta().id());
+
+		if (!shape.interior().isEmpty()) {
+			layers.paint(shape.interior(), CellValue.surface(color()));
+		}
+
+		layers.paint(shape.outline(), CellValue.line(color()));
+		layers.endAction();
 	}
 
 	/** Glisser avec le bouton gauche enfoncé. */
@@ -134,30 +263,76 @@ public final class DrawTools {
 		}
 	}
 
-	/** Annule une ligne commencée. */
+	/** Annule la ligne ou la forme en cours. */
 	public boolean cancel() {
-		if (lineStart != null) {
-			lineStart = null;
+		if (hasPending()) {
+			anchor = null;
+			polygon.clear();
 			return true;
 		}
 
 		return false;
 	}
 
-	/** Cases de l'aperçu de la ligne en cours, ou null. */
-	public Set<Long> linePreview(int x, int z) {
-		if (tool != Tool.LINE || lineStart == null) {
-			return null;
+	/** Aperçu (case -> valeur) de la ligne ou de la forme en cours jusqu'au curseur, ou null. */
+	public Map<Long, Integer> preview(int x, int z) {
+		Map<Long, Integer> out = new LinkedHashMap<>();
+		int line = CellValue.line(color());
+
+		switch (tool) {
+			case LINE -> {
+				if (anchor == null) {
+					return null;
+				}
+
+				for (long k : Raster.thickLine(CellKey.x(anchor), CellKey.z(anchor), x, z, width())) {
+					out.put(k, line);
+				}
+			}
+			case RECTANGLE, ELLIPSE -> {
+				if (anchor == null) {
+					return null;
+				}
+
+				Shapes.Shape shape = shapeTo(x, z);
+
+				if (shape == null) {
+					return null;
+				}
+
+				shape.interior().forEach(k -> out.put(k, CellValue.surface(color())));
+				shape.outline().forEach(k -> out.put(k, line));
+			}
+			case POLYGON -> {
+				if (polygon.isEmpty()) {
+					return null;
+				}
+
+				List<Long> pts = new ArrayList<>(polygon);
+				pts.add(CellKey.pack(x, z));
+
+				for (int i = 0; i + 1 < pts.size(); i++) {
+					long a = pts.get(i);
+					long b = pts.get(i + 1);
+
+					for (long k : Raster.thickLine(CellKey.x(a), CellKey.z(a), CellKey.x(b), CellKey.z(b), width())) {
+						out.put(k, line);
+					}
+				}
+			}
+			default -> {
+				return null;
+			}
 		}
 
-		return Raster.thickLine(CellKey.x(lineStart), CellKey.z(lineStart), x, z, width());
+		return out;
 	}
 
 	private void apply(Set<Long> cells) {
 		if (tool == Tool.ERASER) {
 			layers.erase(cells);
 		} else {
-			layers.paint(cells, color());
+			layers.paint(cells, CellValue.line(color()));
 		}
 	}
 }

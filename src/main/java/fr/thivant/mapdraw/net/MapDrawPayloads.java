@@ -20,7 +20,7 @@ import fr.thivant.mapdraw.core.LayerMeta;
  */
 public final class MapDrawPayloads {
 	/** Version du protocole : à incrémenter si le format change. */
-	public static final int PROTOCOL = 1;
+	public static final int PROTOCOL = 2;
 	/** Cases max par paquet client -> serveur (limite vanilla ~32 Ko par paquet entrant). */
 	public static final int MAX_CELLS_C2S = 2000;
 	/** Cases max par paquet serveur -> client. */

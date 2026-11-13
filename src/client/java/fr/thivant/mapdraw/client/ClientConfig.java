@@ -37,6 +37,10 @@ public final class ClientConfig {
 	// Outils (mémorisés entre les sessions)
 	public int color = 0xE53935;
 	public int width = 1;
+	/** Formes remplies (surface teintée) ou contour seul. */
+	public boolean fillShapes = true;
+	/** Opacité des surfaces (intérieur des formes), sur la carte et au sol. */
+	public float surfaceOpacity = 0.35f;
 
 	// Carte JourneyMap
 	public float journeyMapOpacity = 0.6f;
@@ -74,6 +78,7 @@ public final class ClientConfig {
 	public void clamp() {
 		opacity = Math.max(0.1f, Math.min(1.0f, opacity));
 		journeyMapOpacity = Math.max(0.1f, Math.min(1.0f, journeyMapOpacity));
+		surfaceOpacity = Math.max(0.05f, Math.min(1.0f, surfaceOpacity));
 		maxDistance = Math.max(16, Math.min(1024, maxDistance));
 		width = Math.max(1, Math.min(5, width));
 		color &= 0xFFFFFF;

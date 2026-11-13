@@ -66,7 +66,7 @@ public final class LayerData {
 			return old;
 		}
 
-		int rgb = color & 0xFFFFFF;
+		int rgb = color & CellValue.MASK;
 		Integer old = chunks.computeIfAbsent(chunkKey, k -> new HashMap<>()).put(cell, rgb);
 
 		if (old == null) {

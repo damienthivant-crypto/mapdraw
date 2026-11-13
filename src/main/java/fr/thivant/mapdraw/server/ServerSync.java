@@ -198,7 +198,7 @@ public final class ServerSync {
 		boolean refused = false;
 
 		for (int i = 0; i < count; i++) {
-			int color = colors[i] == LayerData.ERASE ? LayerData.ERASE : (colors[i] & 0xFFFFFF);
+			int color = colors[i] == LayerData.ERASE ? LayerData.ERASE : (colors[i] & fr.thivant.mapdraw.core.CellValue.MASK);
 
 			if (color != LayerData.ERASE && layer.size() >= MAX_CELLS_PER_LAYER && layer.get(keys[i]) == null) {
 				refused = true;

@@ -76,7 +76,7 @@ public final class LayerJson {
 			for (int i = 0; i + 2 < cells.size(); i += 3) {
 				int x = cells.get(i).getAsInt();
 				int z = cells.get(i + 1).getAsInt();
-				int color = cells.get(i + 2).getAsInt() & 0xFFFFFF;
+				int color = cells.get(i + 2).getAsInt() & CellValue.MASK;
 				layer.set(CellKey.pack(x, z), color);
 			}
 		}

@@ -143,6 +143,9 @@ public final class ClientStorage {
 		JsonArray hidden = new JsonArray();
 		layers.hiddenIds().forEach(id -> hidden.add(id.toString()));
 		root.add("hidden", hidden);
+		JsonArray worldHidden = new JsonArray();
+		layers.worldHiddenIds().forEach(id -> worldHidden.add(id.toString()));
+		root.add("worldHidden", worldHidden);
 
 		if (layers.activeId() != null) {
 			root.addProperty("active", layers.activeId().toString());
@@ -176,8 +179,16 @@ public final class ClientStorage {
 				}
 			}
 
+			List<UUID> worldHidden = new ArrayList<>();
+
+			if (root.has("worldHidden")) {
+				for (JsonElement e : root.getAsJsonArray("worldHidden")) {
+					worldHidden.add(UUID.fromString(e.getAsString()));
+				}
+			}
+
 			UUID active = root.has("active") ? UUID.fromString(root.get("active").getAsString()) : null;
-			layers.restoreView(hidden, active);
+			layers.restoreView(hidden, worldHidden, active);
 		} catch (Exception e) {
 			MapDraw.LOGGER.warn("view.json illisible", e);
 		}

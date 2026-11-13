@@ -42,6 +42,7 @@ import fr.thivant.mapdraw.client.ClientNet;
 import fr.thivant.mapdraw.client.LayerManager;
 import fr.thivant.mapdraw.client.Terrain;
 import fr.thivant.mapdraw.core.CellKey;
+import fr.thivant.mapdraw.core.CellValue;
 
 /**
  * Affichage des tracés dans le monde sous forme de blocs fantômes translucides.
@@ -53,6 +54,8 @@ public final class GhostRenderer implements LayerManager.Listener {
 	private static final int REBUILD_BUDGET_PER_TICK = 24;
 	private static final int TERRAIN_CHECK_BUDGET_PER_TICK = 1536;
 	private static final float INSET = 0.004f;
+	/** Hauteur de la plaque des surfaces au-dessus du sol. */
+	private static final float SURFACE_HEIGHT = 0.06f;
 	/** VERTEX | COPY_DST, comme les buffers de vertex vanilla. */
 	private static final int VERTEX_BUFFER_USAGE = 40;
 
@@ -123,7 +126,7 @@ public final class GhostRenderer implements LayerManager.Listener {
 	public void onChunkLoaded(int cx, int cz) {
 		long key = CellKey.chunkKey(cx, cz);
 
-		if (!layers.mergedChunk(dimension, key).isEmpty()) {
+		if (!layers.mergedChunkWorld(dimension, key).isEmpty()) {
 			dirty.add(key);
 		}
 	}
@@ -219,7 +222,7 @@ public final class GhostRenderer implements LayerManager.Listener {
 	}
 
 	private void rebuild(ClientLevel level, long chunkKey) {
-		Map<Long, Integer> cells = layers.mergedChunk(dimension, chunkKey);
+		Map<Long, Integer> cells = layers.mergedChunkWorld(dimension, chunkKey);
 		ChunkMesh old = meshes.remove(chunkKey);
 
 		if (old != null) {
@@ -250,6 +253,7 @@ public final class GhostRenderer implements LayerManager.Listener {
 		NeighborLookup neighbors = new NeighborLookup(level, chunkKey, cells, heights);
 		float alpha = ClientConfig.get().opacity;
 		int a = Math.round(alpha * 255f) << 24;
+		int aSurface = Math.round(ClientConfig.get().surfaceOpacity * 255f) << 24;
 		FloatList pos = new FloatList(n * 20 * 3);
 		IntList col = new IntList(n * 20);
 
@@ -267,9 +271,18 @@ public final class GhostRenderer implements LayerManager.Listener {
 			float x1 = (wx - mesh.originX) + 1 - INSET;
 			float z0 = (wz - mesh.originZ) + INSET;
 			float z1 = (wz - mesh.originZ) + 1 - INSET;
+			int value = e.getValue();
+			int rgb = CellValue.rgb(value);
+
+			if (CellValue.isSurface(value)) {
+				// Surface : plaque fine posée sur le sol (teinte au sol, pas de bloc).
+				float yp = y + SURFACE_HEIGHT;
+				quad(pos, col, aSurface | rgb, x0 - INSET, yp, z0 - INSET, x1 + INSET, yp, z0 - INSET, x1 + INSET, yp, z1 + INSET, x0 - INSET, yp, z1 + INSET);
+				continue;
+			}
+
 			float y0 = y + INSET;
 			float y1 = y + 1 - INSET;
-			int rgb = e.getValue() & 0xFFFFFF;
 			int top = a | rgb;
 			int side = a | shade(rgb, 0.82f);
 			int side2 = a | shade(rgb, 0.68f);
@@ -348,13 +361,16 @@ public final class GhostRenderer implements LayerManager.Listener {
 			long cell = CellKey.pack(x, z);
 			long ck = CellKey.chunkOf(cell);
 
+			// Seuls les blocs de trait (pas les surfaces) masquent les faces de leurs voisins.
 			if (ck == chunkKey) {
-				return ownCells.containsKey(cell) ? ownHeights.get(cell) : Integer.MAX_VALUE;
+				Integer v = ownCells.get(cell);
+				return v != null && !CellValue.isSurface(v) ? ownHeights.get(cell) : Integer.MAX_VALUE;
 			}
 
-			Map<Long, Integer> other = otherChunks.computeIfAbsent(ck, k -> layers.mergedChunk(dimension, k));
+			Map<Long, Integer> other = otherChunks.computeIfAbsent(ck, k -> layers.mergedChunkWorld(dimension, k));
+			Integer v = other.get(cell);
 
-			if (!other.containsKey(cell)) {
+			if (v == null || CellValue.isSurface(v)) {
 				return Integer.MAX_VALUE;
 			}
 

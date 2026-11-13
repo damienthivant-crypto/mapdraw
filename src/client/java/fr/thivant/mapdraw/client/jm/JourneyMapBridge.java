@@ -8,7 +8,6 @@ import java.util.Iterator;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 
 import org.lwjgl.sdl.SDLMouse;
 
@@ -47,6 +46,7 @@ import fr.thivant.mapdraw.client.MapDrawClient;
 import fr.thivant.mapdraw.client.gui.Keys;
 import fr.thivant.mapdraw.client.gui.MapDrawScreen;
 import fr.thivant.mapdraw.core.CellKey;
+import fr.thivant.mapdraw.core.CellValue;
 
 /**
  * Pont entre MapDraw et JourneyMap :
@@ -122,6 +122,16 @@ final class JourneyMapBridge implements LayerManager.Listener {
 					return false;
 				}
 
+				if (Keys.isBackspace(event) && tools.removeLastPoint()) {
+					lastPreviewEnd = Long.MIN_VALUE;
+					return false;
+				}
+
+				if (Keys.isEnter(event) && tools.finishPolygon(MapDrawClient.currentDimension())) {
+					clearPreview();
+					return false;
+				}
+
 				return true;
 			});
 			ScreenEvents.remove(screen).register(s -> {
@@ -163,8 +173,14 @@ final class JourneyMapBridge implements LayerManager.Listener {
 
 		if (isLeft(event.getButton())) {
 			tools.press(dimId(event.getLevel()), pos.getX(), pos.getZ());
+			lastPreviewEnd = Long.MIN_VALUE;
+
+			if (!tools.hasPending()) {
+				clearPreview();
+			}
+
 			event.cancel();
-		} else if (isRight(event.getButton()) && tools.cancel()) {
+		} else if (isRight(event.getButton()) && (tools.finishPolygon(dimId(event.getLevel())) || tools.cancel())) {
 			clearPreview();
 			event.cancel();
 		}
@@ -179,7 +195,7 @@ final class JourneyMapBridge implements LayerManager.Listener {
 
 		if (tools.isStroking()) {
 			tools.drag(pos.getX(), pos.getZ());
-		} else if (isLeft(event.getButton()) && tools.tool() != DrawTools.Tool.LINE) {
+		} else if (isLeft(event.getButton()) && (tools.tool() == DrawTools.Tool.FREEHAND || tools.tool() == DrawTools.Tool.ERASER)) {
 			// Au cas où JourneyMap n'émettrait le clic qu'au relâchement : le trait démarre au premier glisser.
 			tools.press(dimId(event.getLevel()), pos.getX(), pos.getZ());
 		}
@@ -203,20 +219,14 @@ final class JourneyMapBridge implements LayerManager.Listener {
 		}
 
 		lastPreviewEnd = end;
-		Set<Long> cells = tools.linePreview(pos.getX(), pos.getZ());
+		Map<Long, Integer> cells = tools.preview(pos.getX(), pos.getZ());
 		clearPreview();
 
 		if (cells == null || cells.isEmpty()) {
 			return;
 		}
 
-		Map<Long, Integer> colored = new HashMap<>();
-
-		for (long cell : cells) {
-			colored.put(cell, tools.color());
-		}
-
-		preview.addAll(buildOverlays(dimId(event.getLevel()), colored, 0.45f, "MapDraw (aperçu)"));
+		preview.addAll(buildOverlays(dimId(event.getLevel()), cells, 0.45f, "MapDraw (aperçu)"));
 		showAll(preview);
 	}
 
@@ -255,7 +265,8 @@ final class JourneyMapBridge implements LayerManager.Listener {
 		String text = "MapDraw – " + tools.tool().label
 				+ " · épaisseur " + tools.width()
 				+ " · calque : " + (active != null ? active.meta().name() : "(nouveau)")
-				+ (tools.lineStart() != null ? " · cliquez l'arrivée (clic droit : annuler)" : "")
+				+ (tools.tool().isShape() ? (tools.filled() ? " · surface" : " · contour") : "")
+				+ (tools.hint() != null ? " · " + tools.hint() : "")
 				+ " · Ctrl+Z / Ctrl+Y";
 		int w = font.width(text) + 22;
 		int x = (screen.width - w) / 2;
@@ -302,10 +313,11 @@ final class JourneyMapBridge implements LayerManager.Listener {
 	private void tick() {
 		String dim = MapDrawClient.currentDimension();
 		float opacity = ClientConfig.get().journeyMapOpacity;
+		float signature = opacity * 1000f + ClientConfig.get().surfaceOpacity;
 
-		if (!dim.equals(dimension) || opacity != lastOpacity) {
+		if (!dim.equals(dimension) || signature != lastOpacity) {
 			dimension = dim;
-			lastOpacity = opacity;
+			lastOpacity = signature;
 			rebuildAll();
 		}
 
@@ -388,10 +400,14 @@ final class JourneyMapBridge implements LayerManager.Listener {
 		List<PolygonOverlay> out = new ArrayList<>();
 		ResourceKey<Level> dimKey = ResourceKey.create(Registries.DIMENSION, Identifier.parse(dim));
 
+		float surfaceOpacity = Math.min(opacity, ClientConfig.get().surfaceOpacity);
+
 		for (Map.Entry<Integer, Area> e : byColor.entrySet()) {
-			int rgb = e.getKey();
+			int value = e.getKey();
+			int rgb = CellValue.rgb(value);
+			float fill = CellValue.isSurface(value) ? surfaceOpacity : opacity;
 			ShapeProperties props = new ShapeProperties()
-					.setFillColor(rgb).setFillOpacity(opacity)
+					.setFillColor(rgb).setFillOpacity(fill)
 					.setStrokeColor(rgb).setStrokeOpacity(0f).setStrokeWidth(1f);
 
 			for (MapPolygonWithHoles polygon : PolygonHelper.createPolygonFromArea(e.getValue(), OVERLAY_Y)) {

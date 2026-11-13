@@ -27,13 +27,17 @@ public final class ConfigScreen extends Screen {
 	protected void init() {
 		ClientConfig cfg = ClientConfig.get();
 		int cx = width / 2;
-		int y = 40;
+		int y = 34;
 
 		toggle(cx, y, () -> "Affichage dans le monde : " + onOff(cfg.showInWorld), () -> cfg.showInWorld = !cfg.showInWorld);
 		y += 24;
 		stepper(cx, y, () -> "Opacité : " + Math.round(cfg.opacity * 100) + " %",
 				() -> cfg.opacity = Math.max(0.1f, Math.round((cfg.opacity - 0.05f) * 100) / 100f),
 				() -> cfg.opacity = Math.min(1.0f, Math.round((cfg.opacity + 0.05f) * 100) / 100f), true);
+		y += 24;
+		stepper(cx, y, () -> "Opacité des surfaces : " + Math.round(cfg.surfaceOpacity * 100) + " %",
+				() -> cfg.surfaceOpacity = Math.max(0.05f, Math.round((cfg.surfaceOpacity - 0.05f) * 100) / 100f),
+				() -> cfg.surfaceOpacity = Math.min(1.0f, Math.round((cfg.surfaceOpacity + 0.05f) * 100) / 100f), true);
 		y += 24;
 		stepper(cx, y, () -> "Distance max : " + cfg.maxDistance + " blocs",
 				() -> cfg.maxDistance = Math.max(16, cfg.maxDistance - 32),

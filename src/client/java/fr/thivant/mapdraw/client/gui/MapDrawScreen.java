@@ -4,7 +4,6 @@ import java.io.IOException;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 
 import org.jspecify.annotations.Nullable;
 import org.lwjgl.sdl.SDLMouse;
@@ -25,6 +24,7 @@ import fr.thivant.mapdraw.client.DrawTools;
 import fr.thivant.mapdraw.client.LayerManager;
 import fr.thivant.mapdraw.client.MapDrawClient;
 import fr.thivant.mapdraw.core.CellKey;
+import fr.thivant.mapdraw.core.CellValue;
 import fr.thivant.mapdraw.core.LayerData;
 
 /**
@@ -47,9 +47,9 @@ public final class MapDrawScreen extends Screen {
 	private final DrawTools tools = MapDrawClient.tools();
 	private final TerrainColors terrain = new TerrainColors();
 
-	private Button freehandBtn;
-	private Button lineBtn;
-	private Button eraserBtn;
+	private final java.util.EnumMap<DrawTools.Tool, Button> toolButtons = new java.util.EnumMap<>(DrawTools.Tool.class);
+	private Button fillBtn;
+	private Button layerWorldBtn;
 	private Button undoBtn;
 	private Button redoBtn;
 	private Button shareBtn;
@@ -88,9 +88,17 @@ public final class MapDrawScreen extends Screen {
 		int y = 18;
 		int w3 = (PANEL_W - 12 - 4) / 3;
 
-		freehandBtn = addRenderableWidget(Button.builder(Component.literal("Main"), b -> tools.setTool(DrawTools.Tool.FREEHAND)).pos(x, y).size(w3, 18).build());
-		lineBtn = addRenderableWidget(Button.builder(Component.literal("Ligne"), b -> tools.setTool(DrawTools.Tool.LINE)).pos(x + w3 + 2, y).size(w3, 18).build());
-		eraserBtn = addRenderableWidget(Button.builder(Component.literal("Gomme"), b -> tools.setTool(DrawTools.Tool.ERASER)).pos(x + 2 * (w3 + 2), y).size(w3, 18).build());
+		DrawTools.Tool[] all = DrawTools.Tool.values();
+
+		for (int i = 0; i < all.length; i++) {
+			DrawTools.Tool t = all[i];
+			int bx = x + (i % 3) * (w3 + 2);
+			int by = y + (i / 3) * 20;
+			toolButtons.put(t, addRenderableWidget(Button.builder(Component.literal(t.shortLabel), b -> tools.setTool(t)).pos(bx, by).size(w3, 18).build()));
+		}
+
+		y += 40;
+		fillBtn = addRenderableWidget(Button.builder(Component.literal("Formes"), b -> tools.setFilled(!tools.filled())).pos(x, y).size(PANEL_W - 12, 18).build());
 		y += 24;
 
 		paletteY = y;
@@ -114,7 +122,7 @@ public final class MapDrawScreen extends Screen {
 
 		// Liste des calques : place restante moins les boutons du bas (6 rangées).
 		listTop = y + 11;
-		int bottomBlock = 20 + 5 * 20 + 24;
+		int bottomBlock = 20 + 6 * 20 + 24;
 		listRows = Math.max(3, (height - listTop - bottomBlock) / ROW_H);
 		y = listTop + listRows * ROW_H + 3;
 
@@ -127,6 +135,14 @@ public final class MapDrawScreen extends Screen {
 		y += 20;
 		shareBtn = addRenderableWidget(Button.builder(Component.literal("Partager"), b -> toggleShare()).pos(x, y).size(w2, 18).build());
 		addRenderableWidget(Button.builder(Component.literal("Supprimer"), b -> deleteLayer()).pos(x + w2 + 2, y).size(w2, 18).build());
+		y += 20;
+		layerWorldBtn = addRenderableWidget(Button.builder(Component.literal("Monde"), b -> {
+			LayerData active = layers.active();
+
+			if (active != null) {
+				layers.toggleWorld(active.meta().id());
+			}
+		}).pos(x, y).size(PANEL_W - 12, 18).build());
 		y += 20;
 		addRenderableWidget(Button.builder(Component.literal("Exporter"), b -> exportLayer()).pos(x, y).size(w2, 18).build());
 		addRenderableWidget(Button.builder(Component.literal("Importer"), b -> minecraft.gui.setScreen(new ImportScreen(this))).pos(x + w2 + 2, y).size(w2, 18).build());
@@ -230,14 +246,19 @@ public final class MapDrawScreen extends Screen {
 
 	private void refreshLabels() {
 		DrawTools.Tool t = tools.tool();
-		freehandBtn.setMessage(Component.literal(t == DrawTools.Tool.FREEHAND ? "» Main" : "Main"));
-		lineBtn.setMessage(Component.literal(t == DrawTools.Tool.LINE ? "» Ligne" : "Ligne"));
-		eraserBtn.setMessage(Component.literal(t == DrawTools.Tool.ERASER ? "» Gomme" : "Gomme"));
+
+		for (Map.Entry<DrawTools.Tool, Button> e : toolButtons.entrySet()) {
+			e.getValue().setMessage(Component.literal(e.getKey() == t ? "» " + e.getKey().shortLabel : e.getKey().shortLabel));
+		}
+
+		fillBtn.setMessage(Component.literal("Formes : " + (tools.filled() ? "surface teintée" : "contour seul")));
 		undoBtn.active = layers.canUndo();
 		redoBtn.active = layers.canRedo();
 		LayerData active = layers.active();
 		shareBtn.setMessage(Component.literal(active != null && active.meta().shared() ? "Rendre privé" : "Partager"));
 		shareBtn.active = active != null && layers.serverMode() && layers.isOwn(active);
+		layerWorldBtn.active = active != null;
+		layerWorldBtn.setMessage(Component.literal("Calque dans le monde : " + (active != null && layers.isWorldHidden(active.meta().id()) ? "caché" : "visible")));
 		worldBtn.setMessage(Component.literal("Monde : " + (ClientConfig.get().showInWorld ? "ON" : "OFF")));
 	}
 
@@ -309,7 +330,8 @@ public final class MapDrawScreen extends Screen {
 			g.text(font, hidden ? "○" : "●", 9, ry + 2, hidden ? TEXT_DIM : 0xFF7CD67C);
 			String badge = layer.meta().shared() ? (layers.isOwn(layer) ? "P" : layer.meta().ownerName()) : "";
 			int badgeW = badge.isEmpty() ? 0 : font.width(badge) + 4;
-			String name = fit(layer.meta().name(), PANEL_W - 6 - 20 - badgeW - 4);
+			String label = layer.meta().name() + (layers.isWorldHidden(layer.meta().id()) ? " (carte)" : "");
+			String name = fit(label, PANEL_W - 6 - 20 - badgeW - 4);
 			g.text(font, name, 20, ry + 2, layers.canEdit(layer) ? TEXT : TEXT_DIM);
 
 			if (!badge.isEmpty()) {
@@ -407,6 +429,7 @@ public final class MapDrawScreen extends Screen {
 		int maxCZ = maxBZ >> 4;
 		String dim = dimension();
 		int cell = Math.max(1, (int) Math.ceil(scale));
+		int surfaceAlpha = Math.round(ClientConfig.get().surfaceOpacity * 255f) << 24;
 
 		for (int cx = minCX; cx <= maxCX; cx++) {
 			for (int cz = minCZ; cz <= maxCZ; cz++) {
@@ -415,7 +438,8 @@ public final class MapDrawScreen extends Screen {
 				for (Map.Entry<Long, Integer> e : cells.entrySet()) {
 					int sx = screenX(CellKey.x(e.getKey()));
 					int sy = screenY(CellKey.z(e.getKey()));
-					g.fill(sx, sy, sx + cell, sy + cell, 0xD0000000 | e.getValue());
+					int v = e.getValue();
+					g.fill(sx, sy, sx + cell, sy + cell, (CellValue.isSurface(v) ? surfaceAlpha : 0xD0000000) | CellValue.rgb(v));
 				}
 			}
 		}
@@ -426,14 +450,20 @@ public final class MapDrawScreen extends Screen {
 		hoverZ = blockZ(mouseY);
 
 		if (hoverValid) {
-			Set<Long> preview = tools.linePreview(hoverX, hoverZ);
+			Map<Long, Integer> preview = tools.preview(hoverX, hoverZ);
 
 			if (preview != null) {
-				for (long key : preview) {
-					int sx = screenX(CellKey.x(key));
-					int sy = screenY(CellKey.z(key));
-					g.fill(sx, sy, sx + cell, sy + cell, 0x90000000 | tools.color());
+				for (Map.Entry<Long, Integer> e : preview.entrySet()) {
+					int sx = screenX(CellKey.x(e.getKey()));
+					int sy = screenY(CellKey.z(e.getKey()));
+					g.fill(sx, sy, sx + cell, sy + cell, (CellValue.isSurface(e.getValue()) ? 0x50000000 : 0x90000000) | tools.color());
 				}
+			}
+
+			for (long p : tools.polygonPoints()) {
+				int px = screenX(CellKey.x(p));
+				int pz = screenY(CellKey.z(p));
+				outline(g, px - 1, pz - 1, px + cell + 1, pz + cell + 1, 0xFFFFFFFF);
 			}
 
 			int lo = fr.thivant.mapdraw.core.Raster.brushLow(tools.width());
@@ -464,8 +494,10 @@ public final class MapDrawScreen extends Screen {
 		g.fill(left, height - 12, width, height, 0xA0000000);
 		g.text(font, info, left + 4, height - 10, TEXT);
 
-		if (tools.lineStart() != null) {
-			g.text(font, "Ligne : cliquez le point d'arrivée (clic droit pour annuler)", left + 4, 4, 0xFFFFE070);
+		String hint = tools.hint();
+
+		if (hint != null) {
+			g.text(font, hint, left + 4, 4, 0xFFFFE070);
 		}
 	}
 
@@ -534,7 +566,7 @@ public final class MapDrawScreen extends Screen {
 			return true;
 		}
 
-		if (button == SDLMouse.SDL_BUTTON_RIGHT && tools.cancel()) {
+		if (button == SDLMouse.SDL_BUTTON_RIGHT && (tools.finishPolygon(dimension()) || tools.cancel())) {
 			return true;
 		}
 
@@ -607,6 +639,14 @@ public final class MapDrawScreen extends Screen {
 
 			if (Keys.isRedo(event)) {
 				layers.redo();
+				return true;
+			}
+
+			if (Keys.isBackspace(event) && tools.removeLastPoint()) {
+				return true;
+			}
+
+			if (Keys.isEnter(event) && tools.finishPolygon(dimension())) {
 				return true;
 			}
 		}

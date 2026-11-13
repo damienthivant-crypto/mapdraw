@@ -70,6 +70,8 @@ public final class LayerManager {
 
 	private final LinkedHashMap<UUID, LayerData> layers = new LinkedHashMap<>();
 	private final Set<UUID> hidden = new HashSet<>();
+	/** Calques visibles sur la carte mais pas dans le monde (réglage local). */
+	private final Set<UUID> worldHidden = new HashSet<>();
 	private final List<Listener> listeners = new ArrayList<>();
 	private final Deque<Action> undo = new ArrayDeque<>();
 	private final Deque<Action> redo = new ArrayDeque<>();
@@ -129,6 +131,7 @@ public final class LayerManager {
 		}
 
 		hidden.clear();
+		worldHidden.clear();
 		undo.clear();
 		redo.clear();
 		outgoing.clear();
@@ -183,6 +186,31 @@ public final class LayerManager {
 		return hidden;
 	}
 
+	public boolean isWorldHidden(UUID id) {
+		return worldHidden.contains(id);
+	}
+
+	public Set<UUID> worldHiddenIds() {
+		return worldHidden;
+	}
+
+	/** Afficher / ne pas afficher ce calque dans le monde (il reste sur la carte). */
+	public void toggleWorld(UUID id) {
+		LayerData layer = layers.get(id);
+
+		if (layer == null) {
+			return;
+		}
+
+		if (!worldHidden.remove(id)) {
+			worldHidden.add(id);
+		}
+
+		viewDirty = true;
+		notifyAllChunks(layer);
+		notifyLayers();
+	}
+
 	public boolean isOwn(LayerData layer) {
 		return layer.meta().owner().equals(selfId);
 	}
@@ -220,6 +248,21 @@ public final class LayerManager {
 		return merged;
 	}
 
+	/** Comme mergedChunk, mais sans les calques masqués dans le monde (rendu des blocs fantômes). */
+	public Map<Long, Integer> mergedChunkWorld(String dimension, long chunkKey) {
+		Map<Long, Integer> merged = new HashMap<>();
+
+		for (LayerData layer : layers.values()) {
+			UUID id = layer.meta().id();
+
+			if (!hidden.contains(id) && !worldHidden.contains(id) && layer.meta().dimension().equals(dimension)) {
+				merged.putAll(layer.cellsInChunk(chunkKey));
+			}
+		}
+
+		return merged;
+	}
+
 	/** Tous les chunks d'une dimension qui contiennent au moins une case visible. */
 	public Set<Long> visibleChunks(String dimension) {
 		Set<Long> out = new HashSet<>();
@@ -249,6 +292,11 @@ public final class LayerManager {
 	}
 
 	private void message(String m) {
+		lastMessage = m;
+	}
+
+	/** Message à afficher au joueur (utilisé par les outils). */
+	public void info(String m) {
 		lastMessage = m;
 	}
 
@@ -289,9 +337,11 @@ public final class LayerManager {
 	}
 
 	/** Restaure l'état d'affichage (calques masqués, calque actif). */
-	public void restoreView(Collection<UUID> hiddenIds, UUID activeId) {
+	public void restoreView(Collection<UUID> hiddenIds, Collection<UUID> worldHiddenIds, UUID activeId) {
 		hidden.clear();
 		hidden.addAll(hiddenIds);
+		worldHidden.clear();
+		worldHidden.addAll(worldHiddenIds);
 		active = activeId;
 		layers.values().forEach(this::notifyAllChunks);
 		notifyLayers();
@@ -483,7 +533,7 @@ public final class LayerManager {
 
 	/** Peint des cases sur le calque de l'action en cours. */
 	public void paint(Collection<Long> keys, int color) {
-		applyToCurrent(keys, color & 0xFFFFFF);
+		applyToCurrent(keys, color & fr.thivant.mapdraw.core.CellValue.MASK);
 	}
 
 	/** Efface des cases sur le calque de l'action en cours. */

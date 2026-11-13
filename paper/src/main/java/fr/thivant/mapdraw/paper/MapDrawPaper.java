@@ -35,7 +35,7 @@ import fr.thivant.mapdraw.core.LayerMeta;
  * Les joueurs doivent avoir le mod MapDraw côté client.
  */
 public final class MapDrawPaper extends JavaPlugin implements PluginMessageListener, Listener {
-	static final int PROTOCOL = 1;
+	static final int PROTOCOL = 2;
 	private static final int MAX_CELLS_C2S = 2000;
 	private static final int MAX_CELLS_S2C = 20000;
 	private static final int MAX_LAYERS_PER_PLAYER = 64;
@@ -232,7 +232,7 @@ public final class MapDrawPaper extends JavaPlugin implements PluginMessageListe
 		boolean refused = false;
 
 		for (int i = 0; i < keys.length; i++) {
-			int color = colors[i] == LayerData.ERASE ? LayerData.ERASE : (colors[i] & 0xFFFFFF);
+			int color = colors[i] == LayerData.ERASE ? LayerData.ERASE : (colors[i] & fr.thivant.mapdraw.core.CellValue.MASK);
 
 			if (color != LayerData.ERASE && layer.size() >= MAX_CELLS_PER_LAYER && layer.get(keys[i]) == null) {
 				refused = true;
