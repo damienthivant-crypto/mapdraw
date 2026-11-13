@@ -38,7 +38,7 @@ Pousse le projet dans un dépôt GitHub. Le workflow `.github/workflows/build.ym
 
 | Dépendance | Version | Rôle | Où l'installer |
 |---|---|---|---|
-| Fabric Loader | ≥ 0.20.1 | chargeur de mods | client + serveur |
+| Fabric Loader | ≥ 0.19.5 | chargeur de mods | client + serveur |
 | Fabric API | 0.166.2+26.3 ou plus récent | événements, réseau, rendu | client + serveur (**obligatoire**) |
 | JourneyMap | version 26.3 (API v2.0.0) | dessin sur la carte JM, overlays | client (**optionnel**) |
 | Mod Menu | 21.0.0 (26.3) | bouton « Configurer » | client (**optionnel**) |
