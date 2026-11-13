@@ -26,6 +26,7 @@ import org.bukkit.plugin.messaging.PluginMessageListener;
 import fr.thivant.mapdraw.core.LayerData;
 import fr.thivant.mapdraw.core.LayerJson;
 import fr.thivant.mapdraw.core.LayerMeta;
+import fr.thivant.mapdraw.core.LongIntMap;
 
 /**
  * Version Paper du serveur MapDraw : même protocole réseau que le mod Fabric.
@@ -39,7 +40,8 @@ public final class MapDrawPaper extends JavaPlugin implements PluginMessageListe
 	private static final int MAX_CELLS_C2S = 2000;
 	private static final int MAX_CELLS_S2C = 20000;
 	private static final int MAX_LAYERS_PER_PLAYER = 64;
-	private static final int MAX_CELLS_PER_LAYER = 262_144;
+	private static final int MAX_CELLS_PER_LAYER = 2_000_000;
+	private static final int MAX_BROADCASTS_PER_TICK = 6;
 	private static final int SAVE_INTERVAL_TICKS = 200;
 	private static final UUID NOBODY = new UUID(0L, 0L);
 
@@ -55,7 +57,14 @@ public final class MapDrawPaper extends JavaPlugin implements PluginMessageListe
 
 	private final Map<UUID, LayerData> layers = new LinkedHashMap<>();
 	private final Set<String> dirtyDimensions = new HashSet<>();
-	private final Map<UUID, Map<UUID, LinkedHashMap<Long, Integer>>> pending = new LinkedHashMap<>();
+	private final Map<UUID, Map<UUID, LongIntMap>> pending = new LinkedHashMap<>();
+	/** Paquets de cases prêts, envoyés progressivement (canal, données, joueur exclu, calque). */
+	private final java.util.ArrayDeque<Object[]> queue = new java.util.ArrayDeque<>();
+	private final java.util.concurrent.ExecutorService writer = java.util.concurrent.Executors.newSingleThreadExecutor(r -> {
+		Thread t = new Thread(r, "MapDraw-sauvegarde");
+		t.setDaemon(true);
+		return t;
+	});
 	private final Map<UUID, Long> lastError = new HashMap<>();
 	private final Set<UUID> welcomed = new HashSet<>();
 	private Path dir;
@@ -80,6 +89,7 @@ public final class MapDrawPaper extends JavaPlugin implements PluginMessageListe
 
 		Bukkit.getScheduler().runTaskTimer(this, () -> {
 			flush();
+			sendQueued(MAX_BROADCASTS_PER_TICK);
 
 			if (++tick >= SAVE_INTERVAL_TICKS) {
 				tick = 0;
@@ -100,7 +110,16 @@ public final class MapDrawPaper extends JavaPlugin implements PluginMessageListe
 	@Override
 	public void onDisable() {
 		flush();
+		sendQueued(Integer.MAX_VALUE);
 		saveDirty();
+
+		try {
+			writer.submit(() -> { }).get(30, java.util.concurrent.TimeUnit.SECONDS);
+		} catch (Exception e) {
+			getLogger().log(Level.WARNING, "Attente de la sauvegarde interrompue", e);
+		}
+
+		writer.shutdown();
 	}
 
 	// ------------------------------------------------------------------ événements
@@ -209,6 +228,7 @@ public final class MapDrawPaper extends JavaPlugin implements PluginMessageListe
 
 		layers.remove(id);
 		pending.remove(id);
+		queue.removeIf(q -> id.equals(q[3]));
 		dirtyDimensions.add(existing.meta().dimension());
 		broadcast(LAYER_DELETE_S2C, new Wire.Writer().uuid(id).bytes(), player.getUniqueId());
 	}
@@ -226,20 +246,20 @@ public final class MapDrawPaper extends JavaPlugin implements PluginMessageListe
 			return;
 		}
 
-		LinkedHashMap<Long, Integer> out = pending
+		LongIntMap out = pending
 				.computeIfAbsent(layerId, k -> new LinkedHashMap<>())
-				.computeIfAbsent(player.getUniqueId(), k -> new LinkedHashMap<>());
+				.computeIfAbsent(player.getUniqueId(), k -> new LongIntMap(keys.length));
 		boolean refused = false;
 
 		for (int i = 0; i < keys.length; i++) {
 			int color = colors[i] == LayerData.ERASE ? LayerData.ERASE : (colors[i] & fr.thivant.mapdraw.core.CellValue.MASK);
 
-			if (color != LayerData.ERASE && layer.size() >= MAX_CELLS_PER_LAYER && layer.get(keys[i]) == null) {
+			if (color != LayerData.ERASE && layer.size() >= MAX_CELLS_PER_LAYER && layer.getRaw(keys[i]) == LongIntMap.NONE) {
 				refused = true;
 				continue;
 			}
 
-			layer.set(keys[i], color);
+			layer.setRaw(keys[i], color);
 			out.put(keys[i], color);
 		}
 
@@ -257,10 +277,10 @@ public final class MapDrawPaper extends JavaPlugin implements PluginMessageListe
 			return;
 		}
 
-		for (Map.Entry<UUID, Map<UUID, LinkedHashMap<Long, Integer>>> byLayer : pending.entrySet()) {
-			for (Map.Entry<UUID, LinkedHashMap<Long, Integer>> bySender : byLayer.getValue().entrySet()) {
+		for (Map.Entry<UUID, Map<UUID, LongIntMap>> byLayer : pending.entrySet()) {
+			for (Map.Entry<UUID, LongIntMap> bySender : byLayer.getValue().entrySet()) {
 				for (byte[] packet : cellPackets(byLayer.getKey(), bySender.getValue())) {
-					broadcast(CELLS_S2C, packet, bySender.getKey());
+					queue.add(new Object[] {CELLS_S2C, packet, bySender.getKey(), byLayer.getKey()});
 				}
 			}
 		}
@@ -268,16 +288,23 @@ public final class MapDrawPaper extends JavaPlugin implements PluginMessageListe
 		pending.clear();
 	}
 
-	private static List<byte[]> cellPackets(UUID layer, Map<Long, Integer> cells) {
-		List<byte[]> packets = new ArrayList<>();
-		List<Map.Entry<Long, Integer>> entries = new ArrayList<>(cells.entrySet());
+	private void sendQueued(int max) {
+		for (int i = 0; i < max && !queue.isEmpty(); i++) {
+			Object[] q = queue.poll();
+			broadcast((String) q[0], (byte[]) q[1], (UUID) q[2]);
+		}
+	}
 
-		for (int start = 0; start < entries.size(); start += MAX_CELLS_S2C) {
-			int end = Math.min(entries.size(), start + MAX_CELLS_S2C);
+	private static List<byte[]> cellPackets(UUID layer, LongIntMap cells) {
+		List<byte[]> packets = new ArrayList<>();
+		long[] keys = cells.keysArray();
+
+		for (int start = 0; start < keys.length; start += MAX_CELLS_S2C) {
+			int end = Math.min(keys.length, start + MAX_CELLS_S2C);
 			Wire.Writer w = new Wire.Writer().uuid(layer).varInt(end - start);
 
 			for (int i = start; i < end; i++) {
-				w.i64(entries.get(i).getKey()).i32(entries.get(i).getValue());
+				w.i64(keys[i]).i32(cells.get(keys[i]));
 			}
 
 			packets.add(w.bytes());
@@ -303,7 +330,10 @@ public final class MapDrawPaper extends JavaPlugin implements PluginMessageListe
 	private void sendLayer(Player player, LayerData layer) {
 		send(player, LAYER_META_S2C, new Wire.Writer().meta(layer.meta()).bytes());
 
-		for (byte[] packet : cellPackets(layer.meta().id(), layer.snapshot())) {
+		LongIntMap all = new LongIntMap(layer.size());
+		layer.forEach(all::put);
+
+		for (byte[] packet : cellPackets(layer.meta().id(), all)) {
 			send(player, CELLS_S2C, packet);
 		}
 	}
@@ -358,6 +388,7 @@ public final class MapDrawPaper extends JavaPlugin implements PluginMessageListe
 		}
 	}
 
+	/** Copie immédiate des calques modifiés, écriture JSON en arrière-plan. */
 	private void saveDirty() {
 		for (String dimension : new ArrayList<>(dirtyDimensions)) {
 			List<LayerData> inDim = new ArrayList<>();
@@ -369,18 +400,19 @@ public final class MapDrawPaper extends JavaPlugin implements PluginMessageListe
 			}
 
 			Path file = dir.resolve(LayerJson.safeFileName(dimension) + ".json");
-
-			try {
-				if (inDim.isEmpty()) {
-					Files.deleteIfExists(file);
-				} else {
-					LayerJson.writeLayers(file, inDim);
+			List<LayerJson.Snapshot> snapshots = LayerJson.snapshots(inDim);
+			dirtyDimensions.remove(dimension);
+			writer.execute(() -> {
+				try {
+					if (snapshots.isEmpty()) {
+						Files.deleteIfExists(file);
+					} else {
+						LayerJson.writeSnapshots(file, snapshots);
+					}
+				} catch (IOException e) {
+					getLogger().log(Level.SEVERE, "Impossible d'écrire " + file, e);
 				}
-
-				dirtyDimensions.remove(dimension);
-			} catch (IOException e) {
-				getLogger().log(Level.SEVERE, "Impossible d'écrire " + file, e);
-			}
+			});
 		}
 	}
 }

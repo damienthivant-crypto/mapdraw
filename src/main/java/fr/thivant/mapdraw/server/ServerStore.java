@@ -86,11 +86,19 @@ public final class ServerStore {
 		return !dirtyDimensions.isEmpty();
 	}
 
-	/** Réécrit uniquement les fichiers des dimensions modifiées. */
-	public void saveDirty() {
-		if (dirtyDimensions.isEmpty()) {
-			return;
-		}
+	/** Écritures disque hors du thread du serveur (une à la fois, dans l'ordre). */
+	private static final java.util.concurrent.ExecutorService WRITER = java.util.concurrent.Executors.newSingleThreadExecutor(r -> {
+		Thread t = new Thread(r, "MapDraw-sauvegarde");
+		t.setDaemon(true);
+		return t;
+	});
+
+	/**
+	 * Réécrit uniquement les fichiers des dimensions modifiées.
+	 * La copie des données est faite tout de suite ; l'écriture JSON se fait en arrière-plan si async.
+	 */
+	public void saveDirty(boolean async) {
+		List<Runnable> writes = new ArrayList<>();
 
 		for (String dimension : new ArrayList<>(dirtyDimensions)) {
 			List<LayerData> inDim = new ArrayList<>();
@@ -102,17 +110,31 @@ public final class ServerStore {
 			}
 
 			Path file = dir.resolve(LayerJson.safeFileName(dimension) + ".json");
-
-			try {
-				if (inDim.isEmpty()) {
-					Files.deleteIfExists(file);
-				} else {
-					LayerJson.writeLayers(file, inDim);
+			List<LayerJson.Snapshot> snapshots = LayerJson.snapshots(inDim);
+			dirtyDimensions.remove(dimension);
+			writes.add(() -> {
+				try {
+					if (snapshots.isEmpty()) {
+						Files.deleteIfExists(file);
+					} else {
+						LayerJson.writeSnapshots(file, snapshots);
+					}
+				} catch (IOException e) {
+					MapDraw.LOGGER.error("Impossible d'écrire {}", file, e);
 				}
+			});
+		}
 
-				dirtyDimensions.remove(dimension);
-			} catch (IOException e) {
-				MapDraw.LOGGER.error("Impossible d'écrire {}", file, e);
+		for (Runnable w : writes) {
+			WRITER.execute(w);
+		}
+
+		if (!async) {
+			// Attend la fin des écritures en cours (arrêt du serveur).
+			try {
+				WRITER.submit(() -> { }).get(30, java.util.concurrent.TimeUnit.SECONDS);
+			} catch (Exception e) {
+				MapDraw.LOGGER.warn("Sauvegarde MapDraw : attente interrompue", e);
 			}
 		}
 	}

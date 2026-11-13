@@ -6,7 +6,6 @@ import java.util.Collection;
 import java.util.Deque;
 import java.util.HashMap;
 import java.util.HashSet;
-import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -14,6 +13,8 @@ import java.util.Set;
 import java.util.UUID;
 
 import fr.thivant.mapdraw.core.CellKey;
+import fr.thivant.mapdraw.core.CellValue;
+import fr.thivant.mapdraw.core.LongIntMap;
 import fr.thivant.mapdraw.core.LayerData;
 import fr.thivant.mapdraw.core.LayerMeta;
 
@@ -43,29 +44,41 @@ public final class LayerManager {
 		}
 	}
 
-	/** Une action annulable : pour chaque case, couleur avant / après (null = vide). */
+	/** Une action annulable : pour chaque case, valeur avant / après (EMPTY = vide). Stockage primitif. */
 	static final class Action {
+		static final int EMPTY = -2;
 		final UUID layer;
-		final LinkedHashMap<Long, Integer[]> changes = new LinkedHashMap<>();
+		final LongIntMap before = new LongIntMap();
+		final LongIntMap after = new LongIntMap();
 
 		Action(UUID layer) {
 			this.layer = layer;
 		}
 
-		void record(long key, Integer before, Integer after) {
-			Integer[] change = changes.get(key);
-
-			if (change == null) {
-				changes.put(key, new Integer[] {before, after});
-			} else {
-				change[1] = after;
+		void record(long key, int beforeValue, int afterValue) {
+			if (before.get(key) == LongIntMap.NONE) {
+				before.put(key, beforeValue);
 			}
+
+			after.put(key, afterValue);
 		}
 
 		boolean isEmpty() {
-			changes.values().removeIf(c -> c[0] == null ? c[1] == null : c[0].equals(c[1]));
-			return changes.isEmpty();
+			int[] changed = {0};
+			after.forEach((k, v) -> {
+				if (before.get(k) != v) {
+					changed[0]++;
+				}
+			});
+			return changed[0] == 0;
 		}
+	}
+
+	/** Nombre maximal de paquets envoyés par tick (évite d'être expulsé par l'anti-spam du serveur). */
+	public static final int MAX_PACKETS_PER_TICK = 8;
+
+	/** Paquet de cases prêt à partir. */
+	private record OutPacket(UUID layer, long[] keys, int[] colors) {
 	}
 
 	private final LinkedHashMap<UUID, LayerData> layers = new LinkedHashMap<>();
@@ -75,7 +88,8 @@ public final class LayerManager {
 	private final List<Listener> listeners = new ArrayList<>();
 	private final Deque<Action> undo = new ArrayDeque<>();
 	private final Deque<Action> redo = new ArrayDeque<>();
-	private final Map<UUID, LinkedHashMap<Long, Integer>> outgoing = new LinkedHashMap<>();
+	private final Map<UUID, LongIntMap> outgoing = new LinkedHashMap<>();
+	private final Deque<OutPacket> sendQueue = new ArrayDeque<>();
 
 	private Action current;
 	private UUID active;
@@ -135,6 +149,7 @@ public final class LayerManager {
 		undo.clear();
 		redo.clear();
 		outgoing.clear();
+		sendQueue.clear();
 		current = null;
 		active = null;
 		serverMode = false;
@@ -248,6 +263,20 @@ public final class LayerManager {
 		return merged;
 	}
 
+	/**
+	 * Remplit une grille 16x16 (index (z&15)*16 + (x&15)) avec les valeurs fusionnées des calques visibles,
+	 * {@link LongIntMap#NONE} pour une case vide. Sans allocation d'objets.
+	 */
+	public void chunkGrid(String dimension, long chunkKey, int[] grid) {
+		java.util.Arrays.fill(grid, LongIntMap.NONE);
+
+		for (LayerData layer : layers.values()) {
+			if (!hidden.contains(layer.meta().id()) && layer.meta().dimension().equals(dimension)) {
+				layer.forEachInChunk(chunkKey, (k, v) -> grid[((CellKey.z(k) & 15) << 4) | (CellKey.x(k) & 15)] = v);
+			}
+		}
+	}
+
 	/** Comme mergedChunk, mais sans les calques masqués dans le monde (rendu des blocs fantômes). */
 	public Map<Long, Integer> mergedChunkWorld(String dimension, long chunkKey) {
 		Map<Long, Integer> merged = new HashMap<>();
@@ -261,6 +290,17 @@ public final class LayerManager {
 		}
 
 		return merged;
+	}
+
+	/** Le chunk contient-il au moins une case visible ? */
+	public boolean hasCells(String dimension, long chunkKey) {
+		for (LayerData layer : layers.values()) {
+			if (!hidden.contains(layer.meta().id()) && layer.meta().dimension().equals(dimension) && layer.chunkKeys().contains(chunkKey)) {
+				return true;
+			}
+		}
+
+		return false;
 	}
 
 	/** Tous les chunks d'une dimension qui contiennent au moins une case visible. */
@@ -441,10 +481,11 @@ public final class LayerManager {
 
 		if (shared) {
 			sink.sendMeta(layer.meta());
-			LinkedHashMap<Long, Integer> out = outgoing.computeIfAbsent(id, k -> new LinkedHashMap<>());
+			LongIntMap out = outgoing.computeIfAbsent(id, k -> new LongIntMap(layer.size()));
 			layer.forEach(out::put);
 		} else {
 			outgoing.remove(id);
+			sendQueue.removeIf(p -> p.layer().equals(id));
 			sink.sendDelete(id);
 		}
 
@@ -483,6 +524,7 @@ public final class LayerManager {
 		}
 
 		outgoing.remove(id);
+		sendQueue.removeIf(p -> p.layer().equals(id));
 		undo.removeIf(a -> a.layer.equals(id));
 		redo.removeIf(a -> a.layer.equals(id));
 
@@ -532,16 +574,35 @@ public final class LayerManager {
 	}
 
 	/** Peint des cases sur le calque de l'action en cours. */
-	public void paint(Collection<Long> keys, int color) {
-		applyToCurrent(keys, color & fr.thivant.mapdraw.core.CellValue.MASK);
+	public void paint(Collection<Long> keys, int value) {
+		int v = value & CellValue.MASK;
+		applyToCurrent(keys.size(), consumer -> keys.forEach(k -> consumer.accept(k, v)));
+	}
+
+	/** Peint un tableau de cases (grandes surfaces, sans objets intermédiaires). */
+	public void paint(long[] keys, int value) {
+		int v = value & CellValue.MASK;
+		applyToCurrent(keys.length, consumer -> {
+			for (long k : keys) {
+				consumer.accept(k, v);
+			}
+		});
 	}
 
 	/** Efface des cases sur le calque de l'action en cours. */
 	public void erase(Collection<Long> keys) {
-		applyToCurrent(keys, null);
+		applyToCurrent(keys.size(), consumer -> keys.forEach(k -> consumer.accept(k, LayerData.ERASE)));
 	}
 
-	private void applyToCurrent(Collection<Long> keys, Integer color) {
+	private interface CellSink {
+		void accept(long key, int value);
+	}
+
+	private interface CellSource {
+		void emit(CellSink sink);
+	}
+
+	private void applyToCurrent(int expected, CellSource source) {
 		if (current == null) {
 			return;
 		}
@@ -554,20 +615,37 @@ public final class LayerManager {
 		}
 
 		Set<Long> touched = new HashSet<>();
+		Action action = current;
+		LongIntMap out = queueFor(layer, expected);
 
-		for (long key : keys) {
-			Integer before = layer.set(key, color);
+		source.emit((key, value) -> {
+			int before = layer.setRaw(key, value);
+			int beforeV = before == LongIntMap.NONE ? Action.EMPTY : before;
+			int afterV = value == LayerData.ERASE ? Action.EMPTY : value;
 
-			if (before == null ? color == null : before.equals(color)) {
-				continue;
+			if (beforeV == afterV) {
+				return;
 			}
 
-			current.record(key, before, color);
-			queueOutgoing(layer, key, color);
+			action.record(key, beforeV, afterV);
+
+			if (out != null) {
+				out.put(key, value);
+			}
+
 			touched.add(CellKey.chunkOf(key));
-		}
+		});
 
 		afterEdit(layer, touched);
+	}
+
+	/** File d'envoi du calque s'il est partagé, sinon null. */
+	private LongIntMap queueFor(LayerData layer, int expected) {
+		if (layer.meta().shared() && serverMode) {
+			return outgoing.computeIfAbsent(layer.meta().id(), k -> new LongIntMap(Math.max(16, expected)));
+		}
+
+		return null;
 	}
 
 	/** Efface tout le calque (annulable). */
@@ -580,7 +658,12 @@ public final class LayerManager {
 		}
 
 		beginAction(id);
-		erase(new ArrayList<>(layer.snapshot().keySet()));
+		long[] keys = layer.toArrays().keys();
+		applyToCurrent(keys.length, consumer -> {
+			for (long k : keys) {
+				consumer.accept(k, LayerData.ERASE);
+			}
+		});
 		endAction();
 		return true;
 	}
@@ -605,13 +688,18 @@ public final class LayerManager {
 			}
 
 			Set<Long> touched = new HashSet<>();
+			LongIntMap out = queueFor(layer, action.after.size());
+			action.after.forEach((key, afterV) -> {
+				int target = backwards ? action.before.get(key) : afterV;
+				int value = target == Action.EMPTY ? LayerData.ERASE : target;
+				layer.setRaw(key, value);
 
-			for (Map.Entry<Long, Integer[]> e : action.changes.entrySet()) {
-				Integer target = backwards ? e.getValue()[0] : e.getValue()[1];
-				layer.set(e.getKey(), target);
-				queueOutgoing(layer, e.getKey(), target);
-				touched.add(CellKey.chunkOf(e.getKey()));
-			}
+				if (out != null) {
+					out.put(key, value);
+				}
+
+				touched.add(CellKey.chunkOf(key));
+			});
 
 			afterEdit(layer, touched);
 			to.push(action);
@@ -637,54 +725,72 @@ public final class LayerManager {
 		}
 	}
 
-	private void queueOutgoing(LayerData layer, long key, Integer color) {
-		if (layer.meta().shared() && serverMode) {
-			outgoing.computeIfAbsent(layer.meta().id(), k -> new LinkedHashMap<>())
-					.put(key, color == null ? LayerData.ERASE : color);
+	/** Blocs encore en attente d'envoi (pour l'affichage). */
+	public int pendingUpload() {
+		int n = 0;
+
+		for (OutPacket p : sendQueue) {
+			n += p.keys().length;
 		}
+
+		for (LongIntMap m : outgoing.values()) {
+			n += m.size();
+		}
+
+		return n;
 	}
 
-	/** Envoie les modifications en attente (appelé à chaque tick client). */
+	/**
+	 * Envoie les modifications en attente (appelé à chaque tick client).
+	 * Les gros lots sont découpés et étalés sur plusieurs ticks.
+	 */
 	public void flushOutgoing() {
-		if (outgoing.isEmpty() || sink == null) {
+		if (sink == null) {
 			return;
 		}
 
-		int max = sink.maxCellsPerPacket();
-		Iterator<Map.Entry<UUID, LinkedHashMap<Long, Integer>>> it = outgoing.entrySet().iterator();
+		if (!outgoing.isEmpty()) {
+			int max = sink.maxCellsPerPacket();
 
-		while (it.hasNext()) {
-			Map.Entry<UUID, LinkedHashMap<Long, Integer>> e = it.next();
-			it.remove();
-			LinkedHashMap<Long, Integer> cells = e.getValue();
+			for (Map.Entry<UUID, LongIntMap> e : outgoing.entrySet()) {
+				LongIntMap cells = e.getValue();
 
-			if (cells.isEmpty()) {
-				continue;
-			}
-
-			long[] keys = new long[Math.min(max, cells.size())];
-			int[] colors = new int[keys.length];
-			int i = 0;
-			int remaining = cells.size();
-
-			for (Map.Entry<Long, Integer> c : cells.entrySet()) {
-				keys[i] = c.getKey();
-				colors[i] = c.getValue();
-				i++;
-				remaining--;
-
-				if (i == keys.length) {
-					sink.sendCells(e.getKey(), keys, colors);
-
-					if (remaining == 0) {
-						break;
-					}
-
-					keys = new long[Math.min(max, remaining)];
-					colors = new int[keys.length];
-					i = 0;
+				if (cells.isEmpty()) {
+					continue;
 				}
+
+				long[] keys = new long[Math.min(max, cells.size())];
+				int[] colors = new int[keys.length];
+				int[] idx = {0};
+				int[] remaining = {cells.size()};
+				UUID layer = e.getKey();
+				long[][] kRef = {keys};
+				int[][] cRef = {colors};
+
+				cells.forEach((k, v) -> {
+					kRef[0][idx[0]] = k;
+					cRef[0][idx[0]] = v;
+					idx[0]++;
+					remaining[0]--;
+
+					if (idx[0] == kRef[0].length) {
+						sendQueue.add(new OutPacket(layer, kRef[0], cRef[0]));
+
+						if (remaining[0] > 0) {
+							kRef[0] = new long[Math.min(max, remaining[0])];
+							cRef[0] = new int[kRef[0].length];
+							idx[0] = 0;
+						}
+					}
+				});
 			}
+
+			outgoing.clear();
+		}
+
+		for (int i = 0; i < MAX_PACKETS_PER_TICK && !sendQueue.isEmpty(); i++) {
+			OutPacket p = sendQueue.poll();
+			sink.sendCells(p.layer(), p.keys(), p.colors());
 		}
 	}
 

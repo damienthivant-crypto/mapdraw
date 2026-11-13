@@ -19,6 +19,7 @@ import fr.thivant.mapdraw.client.LayerManager;
 import fr.thivant.mapdraw.client.MapDrawClient;
 import fr.thivant.mapdraw.core.CellKey;
 import fr.thivant.mapdraw.core.CellValue;
+import fr.thivant.mapdraw.core.LongIntMap;
 import fr.thivant.mapdraw.core.LayerData;
 
 /**
@@ -147,15 +148,43 @@ public final class MapDrawScreen extends Screen {
 		int cell = Math.max(1, (int) Math.ceil(scale));
 		int surfaceAlpha = Math.round(ClientConfig.get().surfaceOpacity * 255f) << 24;
 
+		int[] grid = new int[256];
+
 		for (int cx = minCX; cx <= maxCX; cx++) {
 			for (int cz = minCZ; cz <= maxCZ; cz++) {
-				Map<Long, Integer> cells = layers.mergedChunk(dim, CellKey.chunkKey(cx, cz));
+				long ck = CellKey.chunkKey(cx, cz);
 
-				for (Map.Entry<Long, Integer> e : cells.entrySet()) {
-					int sx = screenX(CellKey.x(e.getKey()));
-					int sy = screenY(CellKey.z(e.getKey()));
-					int v = e.getValue();
-					g.fill(sx, sy, sx + cell, sy + cell, (CellValue.isSurface(v) ? surfaceAlpha : 0xD0000000) | CellValue.rgb(v));
+				if (!layers.hasCells(dim, ck)) {
+					continue;
+				}
+
+				layers.chunkGrid(dim, ck, grid);
+
+				// Une seule bande par suite de cases identiques sur une ligne : beaucoup moins de rectangles.
+				for (int lz = 0; lz < 16; lz++) {
+					int sy = screenY((cz << 4) + lz);
+					int ey = screenY((cz << 4) + lz + 1);
+					int lx = 0;
+
+					while (lx < 16) {
+						int v = grid[(lz << 4) | lx];
+
+						if (v == LongIntMap.NONE) {
+							lx++;
+							continue;
+						}
+
+						int start = lx;
+
+						while (lx < 16 && grid[(lz << 4) | lx] == v) {
+							lx++;
+						}
+
+						int sx = screenX((cx << 4) + start);
+						int ex = screenX((cx << 4) + lx);
+						g.fill(sx, sy, Math.max(ex, sx + 1), Math.max(ey, sy + 1),
+								(CellValue.isSurface(v) ? surfaceAlpha : 0xD0000000) | CellValue.rgb(v));
+					}
 				}
 			}
 		}

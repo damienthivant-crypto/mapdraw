@@ -12,10 +12,8 @@ import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.UUID;
 
 import com.google.gson.JsonArray;
@@ -92,12 +90,19 @@ public final class ClientStorage {
 		if (worldDir != null) {
 			savePrivate(layers);
 			saveView(layers);
+			waitForSaves();
 		}
 
 		worldDir = null;
 	}
 
-	/** Réécrit les fichiers de calques privés (un par dimension). */
+	private static final java.util.concurrent.ExecutorService WRITER = java.util.concurrent.Executors.newSingleThreadExecutor(r -> {
+		Thread t = new Thread(r, "MapDraw-sauvegarde-client");
+		t.setDaemon(true);
+		return t;
+	});
+
+	/** Réécrit les fichiers de calques privés (un par dimension), en arrière-plan. */
 	public static void savePrivate(LayerManager layers) {
 		if (worldDir == null) {
 			return;
@@ -109,28 +114,41 @@ public final class ClientStorage {
 			byDim.computeIfAbsent(layer.meta().dimension(), k -> new ArrayList<>()).add(layer);
 		}
 
-		try {
-			Files.createDirectories(worldDir);
-			Set<String> written = new HashSet<>();
+		// Copie immédiate (rapide), écriture JSON hors du thread du jeu.
+		Map<String, List<LayerJson.Snapshot>> snapshots = new HashMap<>();
+		byDim.forEach((dim, list) -> snapshots.put(LayerJson.safeFileName(dim) + ".json", LayerJson.snapshots(list)));
+		Path dir = worldDir;
 
-			for (Map.Entry<String, List<LayerData>> e : byDim.entrySet()) {
-				String fileName = LayerJson.safeFileName(e.getKey()) + ".json";
-				LayerJson.writeLayers(worldDir.resolve(fileName), e.getValue());
-				written.add(fileName);
-			}
+		WRITER.execute(() -> {
+			try {
+				Files.createDirectories(dir);
 
-			// Supprime les fichiers des dimensions qui n'ont plus de calque privé.
-			try (DirectoryStream<Path> files = Files.newDirectoryStream(worldDir, "*.json")) {
-				for (Path file : files) {
-					String name = file.getFileName().toString();
+				for (Map.Entry<String, List<LayerJson.Snapshot>> e : snapshots.entrySet()) {
+					LayerJson.writeSnapshots(dir.resolve(e.getKey()), e.getValue());
+				}
 
-					if (!name.equals("view.json") && !written.contains(name)) {
-						Files.deleteIfExists(file);
+				// Supprime les fichiers des dimensions qui n'ont plus de calque privé.
+				try (DirectoryStream<Path> files = Files.newDirectoryStream(dir, "*.json")) {
+					for (Path file : files) {
+						String name = file.getFileName().toString();
+
+						if (!name.equals("view.json") && !snapshots.containsKey(name)) {
+							Files.deleteIfExists(file);
+						}
 					}
 				}
+			} catch (IOException e) {
+				MapDraw.LOGGER.error("Impossible d'enregistrer les calques privés", e);
 			}
-		} catch (IOException e) {
-			MapDraw.LOGGER.error("Impossible d'enregistrer les calques privés", e);
+		});
+	}
+
+	/** Attend la fin des sauvegardes en cours. */
+	public static void waitForSaves() {
+		try {
+			WRITER.submit(() -> { }).get(30, java.util.concurrent.TimeUnit.SECONDS);
+		} catch (Exception e) {
+			MapDraw.LOGGER.warn("Attente des sauvegardes interrompue", e);
 		}
 	}
 

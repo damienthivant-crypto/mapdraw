@@ -45,6 +45,9 @@ public final class DrawTools {
 			0x3949AB, 0x8E24AA, 0xD81B60, 0x6D4C41, 0xFFFFFF, 0x212121
 	};
 
+	/** Au-delà, l'aperçu ne montre que le contour (pour rester fluide). */
+	private static final long PREVIEW_FILL_LIMIT = 40_000;
+
 	private final LayerManager layers;
 	private Tool tool = Tool.FREEHAND;
 	private boolean stroking;
@@ -154,7 +157,12 @@ public final class DrawTools {
 				if (anchor == null) {
 					anchor = here;
 				} else {
-					commit(layer, shapeTo(x, z));
+					try {
+						commit(layer, shapeTo(x, z, filled()));
+					} catch (Shapes.TooLargeException e) {
+						tooLarge();
+					}
+
 					anchor = null;
 				}
 			}
@@ -190,10 +198,10 @@ public final class DrawTools {
 		LayerData layer = layers.ensureEditableActive(dimension);
 
 		if (layer != null) {
-			if (filled() && Shapes.boundingArea(polygon) > Shapes.MAX_FILL) {
-				layers.info("Forme trop grande (max " + Shapes.MAX_FILL + " blocs).");
-			} else {
+			try {
 				commit(layer, Shapes.polygon(new ArrayList<>(polygon), width(), filled()));
+			} catch (Shapes.TooLargeException e) {
+				tooLarge();
 			}
 		}
 
@@ -211,28 +219,22 @@ public final class DrawTools {
 		return false;
 	}
 
-	private Shapes.Shape shapeTo(int x, int z) {
+	private void tooLarge() {
+		layers.info("Forme trop grande : " + Shapes.MAX_SPAN + " blocs de côté et " + Shapes.MAX_FILL + " blocs remplis au maximum.");
+	}
+
+	private Shapes.Shape shapeTo(int x, int z, boolean fill) throws Shapes.TooLargeException {
 		int ax = CellKey.x(anchor);
 		int az = CellKey.z(anchor);
-
-		if (filled() && Shapes.rectangleArea(ax, az, x, z) > Shapes.MAX_FILL) {
-			return null;
-		}
-
 		return tool == Tool.ELLIPSE
-				? Shapes.ellipse(ax, az, x, z, width(), filled())
-				: Shapes.rectangle(ax, az, x, z, width(), filled());
+				? Shapes.ellipse(ax, az, x, z, width(), fill)
+				: Shapes.rectangle(ax, az, x, z, width(), fill);
 	}
 
 	private void commit(LayerData layer, Shapes.Shape shape) {
-		if (shape == null) {
-			layers.info("Forme trop grande (max " + Shapes.MAX_FILL + " blocs).");
-			return;
-		}
-
 		layers.beginAction(layer.meta().id());
 
-		if (!shape.interior().isEmpty()) {
+		if (shape.interior().length > 0) {
 			layers.paint(shape.interior(), CellValue.surface(color()));
 		}
 
@@ -294,14 +296,23 @@ public final class DrawTools {
 					return null;
 				}
 
-				Shapes.Shape shape = shapeTo(x, z);
+				// Aperçu léger : l'intérieur n'est montré que pour les petites formes.
+				long box = (long) (Math.abs(x - CellKey.x(anchor)) + 1) * (Math.abs(z - CellKey.z(anchor)) + 1);
+				Shapes.Shape shape;
 
-				if (shape == null) {
+				try {
+					shape = shapeTo(x, z, filled() && box <= PREVIEW_FILL_LIMIT);
+				} catch (Shapes.TooLargeException e) {
 					return null;
 				}
 
-				shape.interior().forEach(k -> out.put(k, CellValue.surface(color())));
-				shape.outline().forEach(k -> out.put(k, line));
+				for (long k : shape.interior()) {
+					out.put(k, CellValue.surface(color()));
+				}
+
+				for (long k : shape.outline()) {
+					out.put(k, line);
+				}
 			}
 			case POLYGON -> {
 				if (polygon.isEmpty()) {

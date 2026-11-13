@@ -75,6 +75,7 @@ final class JourneyMapBridge implements LayerManager.Listener {
 	private String dimension = "";
 	private float lastOpacity = -1f;
 	private long lastPreviewEnd = Long.MIN_VALUE;
+	private long lastPreviewTime;
 	/** Dernier bouton souris (convention SDL de Minecraft) reçu par l'écran JourneyMap. */
 	private int lastButton = -1;
 
@@ -242,12 +243,14 @@ final class JourneyMapBridge implements LayerManager.Listener {
 
 		BlockPos pos = event.getLocation();
 		long end = CellKey.pack(pos.getX(), pos.getZ());
+		long now = System.currentTimeMillis();
 
-		if (end == lastPreviewEnd) {
+		if (end == lastPreviewEnd || now - lastPreviewTime < 60) {
 			return;
 		}
 
 		lastPreviewEnd = end;
+		lastPreviewTime = now;
 		Map<Long, Integer> cells = tools.preview(pos.getX(), pos.getZ());
 		clearPreview();
 
@@ -356,10 +359,11 @@ final class JourneyMapBridge implements LayerManager.Listener {
 			return;
 		}
 
-		int budget = OVERLAY_BUDGET_PER_TICK;
+		long deadline = System.nanoTime() + 6_000_000L; // 6 ms par tick au maximum
+		int done = 0;
 		Iterator<Long> it = dirty.iterator();
 
-		while (budget-- > 0 && it.hasNext()) {
+		while (it.hasNext() && (done++ < OVERLAY_BUDGET_PER_TICK || System.nanoTime() < deadline)) {
 			long chunk = it.next();
 			it.remove();
 			List<PolygonOverlay> old = overlays.remove(chunk);
@@ -392,8 +396,27 @@ final class JourneyMapBridge implements LayerManager.Listener {
 		}
 	}
 
-	/** Un polygone (avec trous) par zone de même couleur, aligné sur la grille des blocs. */
+	/**
+	 * Un polygone (avec trous) par zone de même valeur et par chunk, aligné sur la grille des blocs.
+	 * Le découpage par chunk garde chaque calcul de zone petit, même pour un tracé de plusieurs milliers de blocs.
+	 */
 	private List<PolygonOverlay> buildOverlays(String dim, Map<Long, Integer> cells, float opacity, String group) {
+		Map<Long, Map<Long, Integer>> byChunk = new HashMap<>();
+
+		for (Map.Entry<Long, Integer> e : cells.entrySet()) {
+			byChunk.computeIfAbsent(CellKey.chunkOf(e.getKey()), k -> new HashMap<>()).put(e.getKey(), e.getValue());
+		}
+
+		List<PolygonOverlay> out = new ArrayList<>();
+
+		for (Map<Long, Integer> chunkCells : byChunk.values()) {
+			out.addAll(buildChunkOverlays(dim, chunkCells, opacity, group));
+		}
+
+		return out;
+	}
+
+	private List<PolygonOverlay> buildChunkOverlays(String dim, Map<Long, Integer> cells, float opacity, String group) {
 		Map<Integer, Area> byColor = new HashMap<>();
 		Map<Integer, Map<Integer, List<Integer>>> rows = new HashMap<>();
 

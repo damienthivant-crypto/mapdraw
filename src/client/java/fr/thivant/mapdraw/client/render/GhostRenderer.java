@@ -177,10 +177,12 @@ public final class GhostRenderer implements LayerManager.Listener {
 			return;
 		}
 
-		int budget = REBUILD_BUDGET_PER_TICK;
+		// Au moins quelques chunks par tick, puis on continue tant qu'il reste du temps (5 ms max).
+		long deadline = System.nanoTime() + 5_000_000L;
+		int done = 0;
 		Iterator<Long> it = dirty.iterator();
 
-		while (budget-- > 0 && it.hasNext()) {
+		while (it.hasNext() && (done++ < REBUILD_BUDGET_PER_TICK || System.nanoTime() < deadline)) {
 			long key = it.next();
 			it.remove();
 			rebuild(level, key);

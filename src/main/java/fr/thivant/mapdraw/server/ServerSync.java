@@ -1,12 +1,15 @@
 package fr.thivant.mapdraw.server;
 
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Deque;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
+import net.minecraft.network.protocol.common.custom.CustomPacketPayload;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.server.permissions.Permissions;
@@ -18,8 +21,10 @@ import net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking;
 
 import fr.thivant.mapdraw.MapDraw;
+import fr.thivant.mapdraw.core.CellValue;
 import fr.thivant.mapdraw.core.LayerData;
 import fr.thivant.mapdraw.core.LayerMeta;
+import fr.thivant.mapdraw.core.LongIntMap;
 import fr.thivant.mapdraw.net.MapDrawPayloads;
 import fr.thivant.mapdraw.net.MapDrawPayloads.CellsC2S;
 import fr.thivant.mapdraw.net.MapDrawPayloads.CellsS2C;
@@ -31,24 +36,30 @@ import fr.thivant.mapdraw.net.MapDrawPayloads.LayerMetaS2C;
 import fr.thivant.mapdraw.net.MapDrawPayloads.MessageS2C;
 
 /**
- * Logique serveur : stockage des calques partagés, contrôle des droits, diffusion groupée.
+ * Logique serveur (Fabric) : stockage des calques partagés, contrôle des droits, diffusion groupée.
  * <p>
- * Les modifications reçues pendant un tick sont regroupées par calque et par auteur, puis diffusées
- * en fin de tick (toutes les 50 ms) à tous les autres joueurs qui ont le mod.
+ * Les modifications reçues pendant un tick sont regroupées par calque et par auteur, transformées en
+ * paquets en fin de tick, puis envoyées aux autres joueurs à raison d'un nombre limité de paquets par tick.
  */
 public final class ServerSync {
 	private static final int SAVE_INTERVAL_TICKS = 200;
 	private static final int MAX_LAYERS_PER_PLAYER = 64;
-	private static final int MAX_CELLS_PER_LAYER = 262_144;
+	public static final int MAX_CELLS_PER_LAYER = 2_000_000;
+	private static final int MAX_BROADCASTS_PER_TICK = 6;
 	private static final UUID NOBODY = new UUID(0L, 0L);
 
 	private static MinecraftServer server;
 	private static ServerStore store;
 	private static int tickCounter;
 
-	/** calque -> auteur -> (case -> couleur ou -1) en attente de diffusion. */
-	private static final Map<UUID, Map<UUID, LinkedHashMap<Long, Integer>>> pending = new LinkedHashMap<>();
+	/** calque -> auteur -> (case -> valeur ou -1) reçus pendant le tick. */
+	private static final Map<UUID, Map<UUID, LongIntMap>> pending = new LinkedHashMap<>();
+	/** Paquets prêts, envoyés progressivement. */
+	private static final Deque<Broadcast> queue = new ArrayDeque<>();
 	private static final Map<UUID, Long> lastErrorTime = new HashMap<>();
+
+	private record Broadcast(CellsS2C packet, UUID except) {
+	}
 
 	private ServerSync() {
 	}
@@ -61,10 +72,14 @@ public final class ServerSync {
 		});
 
 		ServerLifecycleEvents.SERVER_STOPPING.register(s -> {
-			flush();
+			collect();
+
+			while (!queue.isEmpty()) {
+				sendQueued(Integer.MAX_VALUE);
+			}
 
 			if (store != null) {
-				store.saveDirty();
+				store.saveDirty(false);
 			}
 
 			pending.clear();
@@ -78,11 +93,12 @@ public final class ServerSync {
 				return;
 			}
 
-			flush();
+			collect();
+			sendQueued(MAX_BROADCASTS_PER_TICK);
 
 			if (++tickCounter >= SAVE_INTERVAL_TICKS) {
 				tickCounter = 0;
-				store.saveDirty();
+				store.saveDirty(true);
 			}
 		});
 
@@ -132,8 +148,7 @@ public final class ServerSync {
 
 			// Le propriétaire est toujours l'expéditeur : on ne fait pas confiance au client.
 			LayerMeta created = new LayerMeta(meta.id(), meta.name(), player.getUUID(), player.getName().getString(), meta.dimension(), true);
-			LayerData layer = new LayerData(created);
-			store.put(layer);
+			store.put(new LayerData(created));
 			broadcast(new LayerMetaS2C(created), player.getUUID());
 			return;
 		}
@@ -169,6 +184,7 @@ public final class ServerSync {
 
 		store.remove(id);
 		pending.remove(id);
+		queue.removeIf(b -> b.packet().layer().equals(id));
 		broadcast(new LayerDeleteS2C(id), player.getUUID());
 	}
 
@@ -192,21 +208,21 @@ public final class ServerSync {
 		long[] keys = payload.keys();
 		int[] colors = payload.colors();
 		int count = Math.min(keys.length, colors.length);
-		LinkedHashMap<Long, Integer> out = pending
+		LongIntMap out = pending
 				.computeIfAbsent(layer.meta().id(), k -> new LinkedHashMap<>())
-				.computeIfAbsent(player.getUUID(), k -> new LinkedHashMap<>());
+				.computeIfAbsent(player.getUUID(), k -> new LongIntMap(count));
 		boolean refused = false;
 
 		for (int i = 0; i < count; i++) {
-			int color = colors[i] == LayerData.ERASE ? LayerData.ERASE : (colors[i] & fr.thivant.mapdraw.core.CellValue.MASK);
+			int value = colors[i] == LayerData.ERASE ? LayerData.ERASE : (colors[i] & CellValue.MASK);
 
-			if (color != LayerData.ERASE && layer.size() >= MAX_CELLS_PER_LAYER && layer.get(keys[i]) == null) {
+			if (value != LayerData.ERASE && layer.size() >= MAX_CELLS_PER_LAYER && layer.getRaw(keys[i]) == LongIntMap.NONE) {
 				refused = true;
 				continue;
 			}
 
-			layer.set(keys[i], color);
-			out.put(keys[i], color);
+			layer.setRaw(keys[i], value);
+			out.put(keys[i], value);
 		}
 
 		store.markDirty(layer.meta().dimension());
@@ -218,18 +234,12 @@ public final class ServerSync {
 
 	// ------------------------------------------------------------------ envoi
 
-	private static void flush() {
-		if (server == null || pending.isEmpty()) {
-			pending.clear();
-			return;
-		}
-
-		for (Map.Entry<UUID, Map<UUID, LinkedHashMap<Long, Integer>>> byLayer : pending.entrySet()) {
-			UUID layerId = byLayer.getKey();
-
-			for (Map.Entry<UUID, LinkedHashMap<Long, Integer>> bySender : byLayer.getValue().entrySet()) {
-				for (CellsS2C packet : split(layerId, bySender.getValue())) {
-					broadcast(packet, bySender.getKey());
+	/** Transforme les modifications du tick en paquets mis en file. */
+	private static void collect() {
+		for (Map.Entry<UUID, Map<UUID, LongIntMap>> byLayer : pending.entrySet()) {
+			for (Map.Entry<UUID, LongIntMap> bySender : byLayer.getValue().entrySet()) {
+				for (CellsS2C packet : split(byLayer.getKey(), bySender.getValue())) {
+					queue.add(new Broadcast(packet, bySender.getKey()));
 				}
 			}
 		}
@@ -237,7 +247,14 @@ public final class ServerSync {
 		pending.clear();
 	}
 
-	private static List<CellsS2C> split(UUID layer, Map<Long, Integer> cells) {
+	private static void sendQueued(int max) {
+		for (int i = 0; i < max && !queue.isEmpty(); i++) {
+			Broadcast b = queue.poll();
+			broadcast(b.packet(), b.except());
+		}
+	}
+
+	private static List<CellsS2C> split(UUID layer, LongIntMap cells) {
 		List<CellsS2C> packets = new ArrayList<>();
 		int n = cells.size();
 
@@ -245,35 +262,32 @@ public final class ServerSync {
 			return packets;
 		}
 
-		long[] keys = new long[Math.min(n, MapDrawPayloads.MAX_CELLS_S2C)];
-		int[] colors = new int[keys.length];
-		int i = 0;
-		int remaining = n;
+		long[][] keys = {new long[Math.min(n, MapDrawPayloads.MAX_CELLS_S2C)]};
+		int[][] values = {new int[keys[0].length]};
+		int[] i = {0};
+		int[] remaining = {n};
 
-		for (Map.Entry<Long, Integer> e : cells.entrySet()) {
-			keys[i] = e.getKey();
-			colors[i] = e.getValue();
-			i++;
-			remaining--;
+		cells.forEach((k, v) -> {
+			keys[0][i[0]] = k;
+			values[0][i[0]] = v;
+			i[0]++;
+			remaining[0]--;
 
-			if (i == keys.length) {
-				packets.add(new CellsS2C(layer, keys, colors));
-				int next = Math.min(remaining, MapDrawPayloads.MAX_CELLS_S2C);
+			if (i[0] == keys[0].length) {
+				packets.add(new CellsS2C(layer, keys[0], values[0]));
 
-				if (next == 0) {
-					break;
+				if (remaining[0] > 0) {
+					keys[0] = new long[Math.min(remaining[0], MapDrawPayloads.MAX_CELLS_S2C)];
+					values[0] = new int[keys[0].length];
+					i[0] = 0;
 				}
-
-				keys = new long[next];
-				colors = new int[next];
-				i = 0;
 			}
-		}
+		});
 
 		return packets;
 	}
 
-	private static void broadcast(net.minecraft.network.protocol.common.custom.CustomPacketPayload payload, UUID except) {
+	private static void broadcast(CustomPacketPayload payload, UUID except) {
 		if (server == null) {
 			return;
 		}
@@ -287,8 +301,10 @@ public final class ServerSync {
 
 	private static void sendLayer(ServerPlayer player, LayerData layer) {
 		ServerPlayNetworking.send(player, new LayerMetaS2C(layer.meta()));
+		LongIntMap all = new LongIntMap(layer.size());
+		layer.forEach(all::put);
 
-		for (CellsS2C packet : split(layer.meta().id(), layer.snapshot())) {
+		for (CellsS2C packet : split(layer.meta().id(), all)) {
 			ServerPlayNetworking.send(player, packet);
 		}
 	}
