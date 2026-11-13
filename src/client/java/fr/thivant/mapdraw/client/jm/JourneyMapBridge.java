@@ -83,16 +83,21 @@ final class JourneyMapBridge implements LayerManager.Listener {
 		layers.addListener(this);
 		MapDrawClient.addTickHook(this::tick);
 
-		ClientEventRegistry.MAPPING_EVENT.subscribe(MapDraw.MOD_ID, this::onMapping);
-		FullscreenEventRegistry.FULLSCREEN_MAP_CLICK_EVENT.subscribe(MapDraw.MOD_ID, this::onClick);
-		FullscreenEventRegistry.FULLSCREEN_MAP_DRAG_EVENT.subscribe(MapDraw.MOD_ID, this::onDrag);
-		FullscreenEventRegistry.FULLSCREEN_MAP_MOVE_EVENT.subscribe(MapDraw.MOD_ID, this::onMove);
-		FullscreenEventRegistry.ADDON_BUTTON_DISPLAY_EVENT.subscribe(MapDraw.MOD_ID, this::onAddonButtons);
-		FullscreenEventRegistry.FULLSCREEN_RENDER_EVENT.subscribe(MapDraw.MOD_ID, this::onRender);
+		ClientEventRegistry.MAPPING_EVENT.subscribe(MapDraw.MOD_ID, e -> safe("onMapping", () -> onMapping(e)));
+		FullscreenEventRegistry.FULLSCREEN_MAP_CLICK_EVENT.subscribe(MapDraw.MOD_ID, e -> safe("onClick", () -> onClick(e)));
+		FullscreenEventRegistry.FULLSCREEN_MAP_DRAG_EVENT.subscribe(MapDraw.MOD_ID, e -> safe("onDrag", () -> onDrag(e)));
+		FullscreenEventRegistry.FULLSCREEN_MAP_MOVE_EVENT.subscribe(MapDraw.MOD_ID, e -> safe("onMove", () -> onMove(e)));
+		FullscreenEventRegistry.ADDON_BUTTON_DISPLAY_EVENT.subscribe(MapDraw.MOD_ID, e -> safe("onAddonButtons", () -> onAddonButtons(e)));
+		FullscreenEventRegistry.FULLSCREEN_RENDER_EVENT.subscribe(MapDraw.MOD_ID, e -> safe("onRender", () -> onRender(e)));
 
 		// Les événements JourneyMap ne précisent pas la convention des boutons souris :
 		// on lit le vrai bouton (convention Minecraft/SDL) via l'API écran de Fabric.
-		ScreenEvents.AFTER_INIT.register((client, screen, w, h) -> {
+		ScreenEvents.AFTER_INIT.register((client, screen, w, h) -> safe("hookScreen", () -> hookScreen(screen)));
+	}
+
+	private void hookScreen(Screen screen) {
+		MapDraw.LOGGER.info("MapDraw : écran ouvert {}", screen.getClass().getName());
+		{
 			if (!screen.getClass().getName().startsWith("journeymap.")) {
 				return;
 			}
@@ -123,7 +128,16 @@ final class JourneyMapBridge implements LayerManager.Listener {
 				tools.endStroke();
 				clearPreview();
 			});
-		});
+		}
+	}
+
+	/** Une erreur dans MapDraw ne doit jamais casser JourneyMap : on la journalise et on continue. */
+	private static void safe(String where, Runnable action) {
+		try {
+			action.run();
+		} catch (Throwable t) {
+			MapDraw.LOGGER.error("MapDraw/JourneyMap : erreur dans {}", where, t);
+		}
 	}
 
 	// ------------------------------------------------------------------ dessin sur la carte plein écran
@@ -216,6 +230,7 @@ final class JourneyMapBridge implements LayerManager.Listener {
 	}
 
 	private void onAddonButtons(FullscreenDisplayEvent.AddonButtonDisplayEvent event) {
+		MapDraw.LOGGER.info("MapDraw : ajout des boutons sur la carte JourneyMap");
 		Screen jmScreen = event.getFullscreen().getScreen();
 		event.getThemeButtonDisplay().addThemeToggleButton("Dessin : ON", "Dessin : OFF", icon("grid"), drawMode, (IThemeButton b) -> {
 			drawMode = !drawMode;
