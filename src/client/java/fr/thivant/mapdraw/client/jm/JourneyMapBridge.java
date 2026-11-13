@@ -44,7 +44,7 @@ import fr.thivant.mapdraw.client.DrawTools;
 import fr.thivant.mapdraw.client.LayerManager;
 import fr.thivant.mapdraw.client.MapDrawClient;
 import fr.thivant.mapdraw.client.gui.Keys;
-import fr.thivant.mapdraw.client.gui.MapDrawScreen;
+import fr.thivant.mapdraw.client.gui.ToolPanel;
 import fr.thivant.mapdraw.core.CellKey;
 import fr.thivant.mapdraw.core.CellValue;
 
@@ -68,6 +68,9 @@ final class JourneyMapBridge implements LayerManager.Listener {
 	private final List<PolygonOverlay> preview = new ArrayList<>();
 
 	private boolean drawMode;
+	private boolean panelOpen;
+	private Screen jmScreen;
+	private final ToolPanel panel = new ToolPanel(() -> jmScreen, () -> panelOpen = false);
 	private boolean mapping;
 	private String dimension = "";
 	private float lastOpacity = -1f;
@@ -103,11 +106,19 @@ final class JourneyMapBridge implements LayerManager.Listener {
 			}
 
 			ScreenMouseEvents.beforeMouseClick(screen).register((s, event) -> lastButton = event.input());
+
+			if (screen.getClass().getName().endsWith(".Fullscreen")) {
+				hookPanel(screen);
+			}
 			ScreenMouseEvents.afterMouseRelease(screen).register((s, event, consumed) -> {
 				tools.endStroke();
 				return consumed;
 			});
 			ScreenKeyboardEvents.allowKeyPress(screen).register((s, event) -> {
+				if (panelOpen && panel.keyPressed(event)) {
+					return false;
+				}
+
 				if (!drawMode) {
 					return true;
 				}
@@ -139,6 +150,24 @@ final class JourneyMapBridge implements LayerManager.Listener {
 				clearPreview();
 			});
 		}
+	}
+
+	/** Panneau d'outils MapDraw affiché par-dessus la carte plein écran de JourneyMap. */
+	private void hookPanel(Screen screen) {
+		jmScreen = screen;
+
+		ScreenEvents.afterExtract(screen).register((s, g, mouseX, mouseY, delta) -> safe("panel.render", () -> {
+			if (panelOpen) {
+				g.nextStratum();
+				panel.setBounds(2, 2, s.height - 4);
+				panel.render(g, mouseX, mouseY);
+			}
+		}));
+		ScreenMouseEvents.allowMouseClick(screen).register((s, event) -> !(panelOpen && panel.mouseClicked(event.x(), event.y(), event.input())));
+		ScreenMouseEvents.allowMouseDrag(screen).register((s, event, h, v) -> !(panelOpen && panel.mouseDragged(event.x(), event.y())));
+		ScreenMouseEvents.allowMouseRelease(screen).register((s, event) -> !(panelOpen && panel.mouseReleased()));
+		ScreenMouseEvents.allowMouseScroll(screen).register((s, mx, my, h, v) -> !(panelOpen && panel.mouseScrolled(mx, my, v)));
+		ScreenKeyboardEvents.allowCharType(screen).register((s, event) -> !(panelOpen && panel.charTyped(event)));
 	}
 
 	/** Une erreur dans MapDraw ne doit jamais casser JourneyMap : on la journalise et on continue. */
@@ -241,7 +270,6 @@ final class JourneyMapBridge implements LayerManager.Listener {
 
 	private void onAddonButtons(FullscreenDisplayEvent.AddonButtonDisplayEvent event) {
 		MapDraw.LOGGER.info("MapDraw : ajout des boutons sur la carte JourneyMap");
-		Screen jmScreen = event.getFullscreen().getScreen();
 		event.getThemeButtonDisplay().addThemeToggleButton("Dessin : ON", "Dessin : OFF", MapDraw.id("textures/gui/jm_draw.png"), drawMode, (IThemeButton b) -> {
 			drawMode = !drawMode;
 			b.setToggled(drawMode);
@@ -249,8 +277,11 @@ final class JourneyMapBridge implements LayerManager.Listener {
 			tools.cancel();
 			clearPreview();
 		});
-		event.getThemeButtonDisplay().addThemeButton("Outils MapDraw", MapDraw.id("textures/gui/jm_tools.png"),
-				(IThemeButton b) -> Minecraft.getInstance().gui.setScreen(new MapDrawScreen(jmScreen)));
+		event.getThemeButtonDisplay().addThemeToggleButton("Outils : ouverts", "Outils MapDraw", MapDraw.id("textures/gui/jm_tools.png"), panelOpen,
+				(IThemeButton b) -> {
+					panelOpen = !panelOpen;
+					b.setToggled(panelOpen);
+				});
 	}
 
 	private void onRender(FullscreenRenderEvent event) {
