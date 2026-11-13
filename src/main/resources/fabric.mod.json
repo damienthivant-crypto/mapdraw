@@ -28,7 +28,7 @@
 		"fabricloader": ">=0.20.1",
 		"minecraft": "~26.3",
 		"java": ">=25",
-		"fabric-api": "*"
+		"fabric-api": ">=0.166.2"
 	},
 	"suggests": {
 		"journeymap": "*",

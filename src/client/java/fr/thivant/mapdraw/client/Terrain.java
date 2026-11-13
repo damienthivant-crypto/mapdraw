@@ -9,8 +9,8 @@ import net.minecraft.world.level.levelgen.Heightmap;
 /**
  * Hauteur de surface côté client, équivalente à la heightmap MOTION_BLOCKING_NO_LEAVES.
  * <p>
- * Cette heightmap n'est pas envoyée aux clients : on part de MOTION_BLOCKING (disponible côté client,
- * elle ignore déjà l'herbe haute et les fleurs) puis on descend tant que le bloc est un feuillage.
+ * Cette heightmap n'est pas envoyée aux clients : on part de MOTION_BLOCKING (disponible côté client)
+ * puis on descend tant que le bloc est un feuillage ou n'a pas de collision (herbe haute, fleurs…).
  */
 public final class Terrain {
 	/** Colonne non chargée. */
@@ -33,7 +33,7 @@ public final class Terrain {
 			pos.set(x, y - 1, z);
 			BlockState state = level.getBlockState(pos);
 
-			if (state.is(BlockTags.LEAVES) || (!state.blocksMotion() && state.getFluidState().isEmpty())) {
+			if (state.is(BlockTags.LEAVES) || (state.getCollisionShape(level, pos).isEmpty() && state.getFluidState().isEmpty())) {
 				y--;
 				continue;
 			}
