@@ -232,14 +232,14 @@ final class JourneyMapBridge implements LayerManager.Listener {
 	private void onAddonButtons(FullscreenDisplayEvent.AddonButtonDisplayEvent event) {
 		MapDraw.LOGGER.info("MapDraw : ajout des boutons sur la carte JourneyMap");
 		Screen jmScreen = event.getFullscreen().getScreen();
-		event.getThemeButtonDisplay().addThemeToggleButton("Dessin : ON", "Dessin : OFF", icon("grid"), drawMode, (IThemeButton b) -> {
+		event.getThemeButtonDisplay().addThemeToggleButton("Dessin : ON", "Dessin : OFF", MapDraw.id("textures/gui/jm_draw.png"), drawMode, (IThemeButton b) -> {
 			drawMode = !drawMode;
 			b.setToggled(drawMode);
 			tools.endStroke();
 			tools.cancel();
 			clearPreview();
 		});
-		event.getThemeButtonDisplay().addThemeButton("Outils MapDraw", icon("keys"),
+		event.getThemeButtonDisplay().addThemeButton("Outils MapDraw", MapDraw.id("textures/gui/jm_tools.png"),
 				(IThemeButton b) -> Minecraft.getInstance().gui.setScreen(new MapDrawScreen(jmScreen)));
 	}
 
@@ -263,10 +263,6 @@ final class JourneyMapBridge implements LayerManager.Listener {
 		g.fill(x, y, x + w, y + 14, 0xC0000000);
 		g.fill(x + 3, y + 3, x + 11, y + 11, 0xFF000000 | tools.color());
 		g.text(font, text, x + 15, y + 3, 0xFFFFFFFF);
-	}
-
-	private static Identifier icon(String name) {
-		return Identifier.fromNamespaceAndPath("journeymap", "/resources/assets/journeymap/theme/flat/icon/" + name + ".png");
 	}
 
 	// ------------------------------------------------------------------ overlays
