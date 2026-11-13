@@ -18,6 +18,10 @@ jobs:
           distribution: 'microsoft'
       - run: chmod +x ./gradlew
       - run: ./gradlew build
+      - name: probe
+        run: |
+          J=$(find ~/.gradle -name "minecraft-client*.jar" -o -name "minecraft-merged*.jar" -o -name "*minecraft*common*.jar" | head -5); echo "$J"
+          for jar in $J; do for c in net.minecraft.client.input.CharacterEvent net.minecraft.client.input.KeyEvent net.minecraft.client.input.MouseButtonEvent net.minecraft.client.gui.GuiGraphicsExtractor; do javap -cp "$jar" -public $c 2>/dev/null; done; done
       - uses: actions/upload-artifact@v7
         with:
           name: mapdraw-jar
