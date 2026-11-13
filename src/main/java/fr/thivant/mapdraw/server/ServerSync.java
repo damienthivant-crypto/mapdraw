@@ -25,6 +25,7 @@ import fr.thivant.mapdraw.core.CellValue;
 import fr.thivant.mapdraw.core.LayerData;
 import fr.thivant.mapdraw.core.LayerMeta;
 import fr.thivant.mapdraw.core.LongIntMap;
+import fr.thivant.mapdraw.core.Zone;
 import fr.thivant.mapdraw.net.MapDrawPayloads;
 import fr.thivant.mapdraw.net.MapDrawPayloads.CellsC2S;
 import fr.thivant.mapdraw.net.MapDrawPayloads.CellsS2C;
@@ -34,6 +35,10 @@ import fr.thivant.mapdraw.net.MapDrawPayloads.LayerDeleteS2C;
 import fr.thivant.mapdraw.net.MapDrawPayloads.LayerMetaC2S;
 import fr.thivant.mapdraw.net.MapDrawPayloads.LayerMetaS2C;
 import fr.thivant.mapdraw.net.MapDrawPayloads.MessageS2C;
+import fr.thivant.mapdraw.net.MapDrawPayloads.ZoneC2S;
+import fr.thivant.mapdraw.net.MapDrawPayloads.ZoneDeleteC2S;
+import fr.thivant.mapdraw.net.MapDrawPayloads.ZoneDeleteS2C;
+import fr.thivant.mapdraw.net.MapDrawPayloads.ZoneS2C;
 
 /**
  * Logique serveur (Fabric) : stockage des calques partagés, contrôle des droits, diffusion groupée.
@@ -45,6 +50,7 @@ public final class ServerSync {
 	private static final int SAVE_INTERVAL_TICKS = 200;
 	private static final int MAX_LAYERS_PER_PLAYER = 64;
 	public static final int MAX_CELLS_PER_LAYER = 2_000_000;
+	public static final int MAX_ZONES_PER_LAYER = 2000;
 	private static final int MAX_BROADCASTS_PER_TICK = 6;
 	private static final UUID NOBODY = new UUID(0L, 0L);
 
@@ -108,6 +114,8 @@ public final class ServerSync {
 		ServerPlayNetworking.registerGlobalReceiver(LayerMetaC2S.TYPE, (payload, context) -> onLayerMeta(context.player(), payload.meta()));
 		ServerPlayNetworking.registerGlobalReceiver(LayerDeleteC2S.TYPE, (payload, context) -> onLayerDelete(context.player(), payload.layer()));
 		ServerPlayNetworking.registerGlobalReceiver(CellsC2S.TYPE, (payload, context) -> onCells(context.player(), payload));
+		ServerPlayNetworking.registerGlobalReceiver(ZoneC2S.TYPE, (payload, context) -> onZone(context.player(), payload.layer(), payload.zone()));
+		ServerPlayNetworking.registerGlobalReceiver(ZoneDeleteC2S.TYPE, (payload, context) -> onZoneDelete(context.player(), payload.layer(), payload.zone()));
 	}
 
 	// ------------------------------------------------------------------ droits
@@ -232,6 +240,56 @@ public final class ServerSync {
 		}
 	}
 
+	private static void onZone(ServerPlayer player, UUID layerId, Zone zone) {
+		if (store == null) {
+			return;
+		}
+
+		LayerData layer = store.get(layerId);
+
+		if (layer == null) {
+			return;
+		}
+
+		if (!canEdit(player, layer)) {
+			error(player, "Vous ne pouvez pas modifier « " + layer.meta().name() + " » (propriétaire : " + layer.meta().ownerName() + ").");
+			resync(player, layer);
+			return;
+		}
+
+		if (!zone.valid() || (layer.zone(zone.id()) == null && layer.zoneCount() >= MAX_ZONES_PER_LAYER)) {
+			error(player, "Zone refusée (trop grande, ou " + MAX_ZONES_PER_LAYER + " zones max par calque).");
+			resync(player, layer);
+			return;
+		}
+
+		layer.putZone(zone);
+		store.markDirty(layer.meta().dimension());
+		broadcast(new ZoneS2C(layerId, zone), player.getUUID());
+	}
+
+	private static void onZoneDelete(ServerPlayer player, UUID layerId, UUID zoneId) {
+		if (store == null) {
+			return;
+		}
+
+		LayerData layer = store.get(layerId);
+
+		if (layer == null || layer.zone(zoneId) == null) {
+			return;
+		}
+
+		if (!canEdit(player, layer)) {
+			error(player, "Vous ne pouvez pas modifier « " + layer.meta().name() + " ».");
+			resync(player, layer);
+			return;
+		}
+
+		layer.removeZone(zoneId);
+		store.markDirty(layer.meta().dimension());
+		broadcast(new ZoneDeleteS2C(layerId, zoneId), player.getUUID());
+	}
+
 	// ------------------------------------------------------------------ envoi
 
 	/** Transforme les modifications du tick en paquets mis en file. */
@@ -306,6 +364,10 @@ public final class ServerSync {
 
 		for (CellsS2C packet : split(layer.meta().id(), all)) {
 			ServerPlayNetworking.send(player, packet);
+		}
+
+		for (Zone zone : layer.zones()) {
+			ServerPlayNetworking.send(player, new ZoneS2C(layer.meta().id(), zone));
 		}
 	}
 

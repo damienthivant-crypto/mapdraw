@@ -146,7 +146,7 @@ public final class MapDrawScreen extends Screen {
 		int maxCZ = maxBZ >> 4;
 		String dim = dimension();
 		int cell = Math.max(1, (int) Math.ceil(scale));
-		int surfaceAlpha = Math.round(ClientConfig.get().surfaceOpacity * 255f) << 24;
+		float surfaceOpacity = ClientConfig.get().surfaceOpacity;
 
 		int[] grid = new int[256];
 
@@ -183,7 +183,7 @@ public final class MapDrawScreen extends Screen {
 						int sx = screenX((cx << 4) + start);
 						int ex = screenX((cx << 4) + lx);
 						g.fill(sx, sy, Math.max(ex, sx + 1), Math.max(ey, sy + 1),
-								(CellValue.isSurface(v) ? surfaceAlpha : 0xD0000000) | CellValue.rgb(v));
+								alpha(CellValue.opacity(v, CellValue.isSurface(v) ? surfaceOpacity : 0.82f)) | CellValue.rgb(v));
 					}
 				}
 			}
@@ -201,7 +201,7 @@ public final class MapDrawScreen extends Screen {
 				for (Map.Entry<Long, Integer> e : preview.entrySet()) {
 					int sx = screenX(CellKey.x(e.getKey()));
 					int sy = screenY(CellKey.z(e.getKey()));
-					g.fill(sx, sy, sx + cell, sy + cell, (CellValue.isSurface(e.getValue()) ? 0x50000000 : 0x90000000) | tools.color());
+					g.fill(sx, sy, sx + cell, sy + cell, (CellValue.isSurface(e.getValue()) ? 0x50000000 : 0xC0000000) | CellValue.rgb(e.getValue()));
 				}
 			}
 
@@ -244,6 +244,10 @@ public final class MapDrawScreen extends Screen {
 		if (hint != null) {
 			g.text(font, hint, left + 4, 4, 0xFFFFE070);
 		}
+	}
+
+	private static int alpha(float opacity) {
+		return Math.round(Math.max(0f, Math.min(1f, opacity)) * 255f) << 24;
 	}
 
 	private static void outline(GuiGraphicsExtractor g, int x0, int y0, int x1, int y1, int color) {
@@ -359,6 +363,19 @@ public final class MapDrawScreen extends Screen {
 		if (Keys.isRedo(event)) {
 			layers.redo();
 			return true;
+		}
+
+		if (tools.tool() == DrawTools.Tool.SELECT && tools.selected() != null) {
+			int dx = Keys.arrowDx(event);
+			int dz = Keys.arrowDz(event);
+
+			if ((dx != 0 || dz != 0) && tools.nudge(dx, dz)) {
+				return true;
+			}
+
+			if (Keys.isDelete(event) && tools.deleteSelected()) {
+				return true;
+			}
 		}
 
 		if (Keys.isBackspace(event) && tools.removeLastPoint()) {

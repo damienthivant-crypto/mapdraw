@@ -17,6 +17,11 @@ import fr.thivant.mapdraw.net.MapDrawPayloads.LayerDeleteS2C;
 import fr.thivant.mapdraw.net.MapDrawPayloads.LayerMetaC2S;
 import fr.thivant.mapdraw.net.MapDrawPayloads.LayerMetaS2C;
 import fr.thivant.mapdraw.net.MapDrawPayloads.MessageS2C;
+import fr.thivant.mapdraw.net.MapDrawPayloads.ZoneC2S;
+import fr.thivant.mapdraw.net.MapDrawPayloads.ZoneDeleteC2S;
+import fr.thivant.mapdraw.net.MapDrawPayloads.ZoneDeleteS2C;
+import fr.thivant.mapdraw.net.MapDrawPayloads.ZoneS2C;
+import fr.thivant.mapdraw.core.Zone;
 
 /**
  * Réseau côté client. Si le serveur n'a pas le mod, aucun paquet n'est envoyé (mode local).
@@ -40,6 +45,8 @@ public final class ClientNet implements LayerManager.NetSink {
 		ClientPlayNetworking.registerGlobalReceiver(LayerMetaS2C.TYPE, (payload, context) -> layers.remoteMeta(payload.meta()));
 		ClientPlayNetworking.registerGlobalReceiver(LayerDeleteS2C.TYPE, (payload, context) -> layers.remoteDelete(payload.layer()));
 		ClientPlayNetworking.registerGlobalReceiver(CellsS2C.TYPE, (payload, context) -> layers.remoteCells(payload.layer(), payload.keys(), payload.colors()));
+		ClientPlayNetworking.registerGlobalReceiver(ZoneS2C.TYPE, (payload, context) -> layers.remoteZone(payload.layer(), payload.zone()));
+		ClientPlayNetworking.registerGlobalReceiver(ZoneDeleteS2C.TYPE, (payload, context) -> layers.remoteZoneDelete(payload.layer(), payload.zone()));
 		ClientPlayNetworking.registerGlobalReceiver(MessageS2C.TYPE, (payload, context) -> chat("MapDraw : " + payload.text()));
 	}
 
@@ -73,6 +80,20 @@ public final class ClientNet implements LayerManager.NetSink {
 	public void sendCells(UUID layer, long[] keys, int[] colors) {
 		if (connected()) {
 			ClientPlayNetworking.send(new CellsC2S(layer, keys, colors));
+		}
+	}
+
+	@Override
+	public void sendZone(UUID layer, Zone zone) {
+		if (connected() && ClientPlayNetworking.canSend(ZoneC2S.TYPE)) {
+			ClientPlayNetworking.send(new ZoneC2S(layer, zone));
+		}
+	}
+
+	@Override
+	public void sendZoneDelete(UUID layer, UUID zone) {
+		if (connected() && ClientPlayNetworking.canSend(ZoneDeleteC2S.TYPE)) {
+			ClientPlayNetworking.send(new ZoneDeleteC2S(layer, zone));
 		}
 	}
 

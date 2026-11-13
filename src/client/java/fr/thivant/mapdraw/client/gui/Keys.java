@@ -79,6 +79,23 @@ public final class Keys {
 		return event.key() == SDLScancode.SDL_SCANCODE_RETURN || event.key() == SDLScancode.SDL_SCANCODE_KP_ENTER;
 	}
 
+	/** Suppr ou Retour arrière (la touche « delete » des Mac). */
+	public static boolean isDelete(KeyEvent event) {
+		return event.key() == SDLScancode.SDL_SCANCODE_DELETE || isBackspace(event);
+	}
+
+	/** Décalage en X pour les flèches gauche / droite (Maj = 10 blocs), sinon 0. */
+	public static int arrowDx(KeyEvent event) {
+		int step = shift(event) ? 10 : 1;
+		return event.key() == SDLScancode.SDL_SCANCODE_LEFT ? -step : event.key() == SDLScancode.SDL_SCANCODE_RIGHT ? step : 0;
+	}
+
+	/** Décalage en Z pour les flèches haut / bas (nord = -Z), sinon 0. */
+	public static int arrowDz(KeyEvent event) {
+		int step = shift(event) ? 10 : 1;
+		return event.key() == SDLScancode.SDL_SCANCODE_UP ? -step : event.key() == SDLScancode.SDL_SCANCODE_DOWN ? step : 0;
+	}
+
 	public static boolean isEscape(KeyEvent event) {
 		return event.key() == SDLScancode.SDL_SCANCODE_ESCAPE;
 	}

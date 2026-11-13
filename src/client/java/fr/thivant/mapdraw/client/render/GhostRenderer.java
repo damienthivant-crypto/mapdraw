@@ -254,8 +254,7 @@ public final class GhostRenderer implements LayerManager.Listener {
 		// Voisins situés dans les chunks adjacents (pour ne pas dessiner les faces internes).
 		NeighborLookup neighbors = new NeighborLookup(level, chunkKey, cells, heights);
 		float alpha = ClientConfig.get().opacity;
-		int a = Math.round(alpha * 255f) << 24;
-		int aSurface = Math.round(ClientConfig.get().surfaceOpacity * 255f) << 24;
+		float surfaceAlpha = ClientConfig.get().surfaceOpacity;
 		FloatList pos = new FloatList(n * 20 * 3);
 		IntList col = new IntList(n * 20);
 
@@ -279,12 +278,14 @@ public final class GhostRenderer implements LayerManager.Listener {
 			if (CellValue.isSurface(value)) {
 				// Surface : plaque fine posée sur le sol (teinte au sol, pas de bloc).
 				float yp = y + SURFACE_HEIGHT;
+				int aSurface = Math.round(CellValue.opacity(value, surfaceAlpha) * 255f) << 24;
 				quad(pos, col, aSurface | rgb, x0 - INSET, yp, z0 - INSET, x1 + INSET, yp, z0 - INSET, x1 + INSET, yp, z1 + INSET, x0 - INSET, yp, z1 + INSET);
 				continue;
 			}
 
 			float y0 = y + INSET;
 			float y1 = y + 1 - INSET;
+			int a = Math.round(CellValue.opacity(value, alpha) * 255f) << 24;
 			int top = a | rgb;
 			int side = a | shade(rgb, 0.82f);
 			int side2 = a | shade(rgb, 0.68f);

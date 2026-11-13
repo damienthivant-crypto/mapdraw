@@ -6,6 +6,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.UUID;
 
 import fr.thivant.mapdraw.core.LayerMeta;
+import fr.thivant.mapdraw.core.Zone;
 
 /**
  * Encodage binaire identique à celui du mod (FriendlyByteBuf de Minecraft) :
@@ -70,6 +71,25 @@ final class Wire {
 			return this;
 		}
 
+		Writer zone(Zone z) {
+			uuid(z.id());
+			varInt(z.kind().ordinal());
+			varInt(z.points().length);
+
+			for (long p : z.points()) {
+				i64(p);
+			}
+
+			i32(z.color());
+			varInt(z.width());
+			bool(z.filled());
+			varInt(z.opacity());
+			bool(z.showWorld());
+			bool(z.showMap());
+			utf(z.name());
+			return this;
+		}
+
 		byte[] bytes() {
 			return out.toByteArray();
 		}
@@ -126,6 +146,37 @@ final class Wire {
 			byte[] bytes = new byte[len];
 			buf.get(bytes);
 			return new String(bytes, StandardCharsets.UTF_8);
+		}
+
+		Zone zone() {
+			UUID id = uuid();
+			int k = varInt();
+			Zone.Kind[] kinds = Zone.Kind.values();
+
+			if (k < 0 || k >= kinds.length) {
+				throw new IllegalArgumentException("type de zone inconnu");
+			}
+
+			int n = varInt();
+
+			if (n < 0 || n > Zone.MAX_POINTS) {
+				throw new IllegalArgumentException("zone trop complexe");
+			}
+
+			long[] pts = new long[n];
+
+			for (int i = 0; i < n; i++) {
+				pts[i] = i64();
+			}
+
+			int color = i32();
+			int width = varInt();
+			boolean filled = bool();
+			int opacity = varInt();
+			boolean showWorld = bool();
+			boolean showMap = bool();
+			String name = utf(48);
+			return new Zone(id, kinds[k], pts, color, width, filled, opacity, showWorld, showMap, name);
 		}
 
 		LayerMeta meta() {

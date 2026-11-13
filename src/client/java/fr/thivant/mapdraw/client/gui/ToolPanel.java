@@ -22,6 +22,7 @@ import fr.thivant.mapdraw.client.DrawTools;
 import fr.thivant.mapdraw.client.LayerManager;
 import fr.thivant.mapdraw.client.MapDrawClient;
 import fr.thivant.mapdraw.core.LayerData;
+import fr.thivant.mapdraw.core.Zone;
 
 /**
  * Panneau d'outils MapDraw, dessiné à la main pour pouvoir s'afficher aussi bien dans l'écran MapDraw
@@ -134,10 +135,17 @@ public final class ToolPanel {
 			button(g, font, mouseX, mouseY, bx, by, w3, t.shortLabel, true, tools.tool() == t, () -> tools.setTool(t));
 		}
 
-		cy += 2 * (BTN_H + 2) + 2;
+		cy += ((all.length + 2) / 3) * (BTN_H + 2) + 2;
 		button(g, font, mouseX, mouseY, left, cy, inner, "Formes : " + (tools.filled() ? "surface teintée" : "contour seul"), true, false,
 				() -> tools.setFilled(!tools.filled()));
 		cy += ROW + 4;
+
+		// Zone sélectionnée
+		LayerManager.ZoneRef sel = tools.selected();
+
+		if (sel != null) {
+			cy = zoneSection(g, font, mouseX, mouseY, sel, left, cy, inner);
+		}
 
 		// Couleur
 		section(g, font, "Couleur", left, cy);
@@ -154,7 +162,7 @@ public final class ToolPanel {
 
 			g.fill(sx, sy, sx + SWATCH, sy + SWATCH, 0xFF000000 | rgb);
 			hits.add(new Hit(sx, sy, sx + SWATCH, sy + SWATCH, () -> {
-				tools.setColor(rgb);
+				setColor(rgb);
 				hexShownFor = -1;
 			}));
 		}
@@ -236,6 +244,70 @@ public final class ToolPanel {
 		contentHeight = (int) (cy + scroll) - y;
 		g.disableScissor();
 		drawScrollbar(g);
+	}
+
+	/** Réglages de la zone sélectionnée. */
+	private int zoneSection(GuiGraphicsExtractor g, Font font, int mouseX, int mouseY, LayerManager.ZoneRef sel, int left, int cy, int inner) {
+		Zone z = sel.zone();
+		boolean edit = layers.canEdit(sel.layer());
+		int w2 = (inner - 2) / 2;
+		g.fill(left - 2, cy - 2, left + inner + 2, cy + 9, 0x30FFFFFF);
+		section(g, font, "Zone : " + z.kind().label + (edit ? "" : " (lecture seule)"), left, cy);
+		g.fill(left + inner - 10, cy, left + inner, cy + 8, 0xFF000000 | z.color());
+		cy += 12;
+		g.text(font, fit(font, (z.maxX() - z.minX() + 1) + " × " + (z.maxZ() - z.minZ() + 1) + " blocs · " + sel.layer().meta().name(), inner),
+				left, cy, TEXT_DIM);
+		cy += 11;
+
+		button(g, font, mouseX, mouseY, left, cy, inner, "Intérieur : " + (z.filled() ? "rempli" : "vide"), edit, z.filled(),
+				() -> tools.updateSelected(zone -> zone.withFilled(!zone.filled())));
+		cy += ROW;
+
+		String op = z.opacity() == 0 ? "auto" : z.opacity() + " %";
+		button(g, font, mouseX, mouseY, left, cy, 18, "-", edit && z.opacity() > 0, false,
+				() -> tools.updateSelected(zone -> zone.withOpacity(Math.max(0, zone.opacity() - 10))));
+		g.centeredText(font, "Opacité : " + op, left + inner / 2, cy + 5, TEXT);
+		button(g, font, mouseX, mouseY, left + inner - 18, cy, 18, "+", edit && z.opacity() < 100, false,
+				() -> tools.updateSelected(zone -> zone.withOpacity(Math.min(100, zone.opacity() + 10))));
+		cy += ROW;
+
+		button(g, font, mouseX, mouseY, left, cy, 18, "-", edit && z.width() > 1, false,
+				() -> tools.updateSelected(zone -> zone.withWidth(zone.width() - 1)));
+		g.centeredText(font, "Contour : " + z.width(), left + inner / 2, cy + 5, TEXT);
+		button(g, font, mouseX, mouseY, left + inner - 18, cy, 18, "+", edit && z.width() < 5, false,
+				() -> tools.updateSelected(zone -> zone.withWidth(zone.width() + 1)));
+		cy += ROW;
+
+		button(g, font, mouseX, mouseY, left, cy, w2, "Carte : " + (z.showMap() ? "oui" : "non"), edit, z.showMap(),
+				() -> tools.updateSelected(zone -> zone.withShowMap(!zone.showMap())));
+		button(g, font, mouseX, mouseY, left + w2 + 2, cy, w2, "Monde : " + (z.showWorld() ? "oui" : "non"), edit, z.showWorld(),
+				() -> tools.updateSelected(zone -> zone.withShowWorld(!zone.showWorld())));
+		cy += ROW;
+
+		button(g, font, mouseX, mouseY, left, cy, inner, "Appliquer la couleur choisie", edit && z.color() != tools.color(), false,
+				() -> tools.updateSelected(zone -> zone.withColor(tools.color())));
+		cy += ROW;
+
+		button(g, font, mouseX, mouseY, left, cy, w2, "Désélect.", true, false, tools::deselect);
+		button(g, font, mouseX, mouseY, left + w2 + 2, cy, w2, "Supprimer", edit, false, tools::deleteSelected);
+		cy += ROW;
+
+		if (tools.tool() != DrawTools.Tool.SELECT) {
+			button(g, font, mouseX, mouseY, left, cy, inner, "Déplacer (outil Sélect.)", true, false,
+					() -> tools.setTool(DrawTools.Tool.SELECT));
+			cy += ROW;
+		}
+
+		return cy + 4;
+	}
+
+	/** Nouvelle couleur ; avec l'outil Sélection, elle s'applique aussi à la zone choisie. */
+	private void setColor(int rgb) {
+		tools.setColor(rgb);
+
+		if (tools.tool() == DrawTools.Tool.SELECT && tools.canEditSelected()) {
+			tools.updateSelected(zone -> zone.withColor(rgb));
+		}
 	}
 
 	private int layerRow(GuiGraphicsExtractor g, Font font, int mouseX, int mouseY, LayerData layer, int left, int cy, int inner) {
@@ -460,7 +532,7 @@ public final class ToolPanel {
 
 		if (v.length() == 6) {
 			try {
-				tools.setColor(Integer.parseInt(v, 16));
+				setColor(Integer.parseInt(v, 16));
 				hexShownFor = tools.color();
 			} catch (NumberFormatException ignored) {
 				// saisie invalide
@@ -512,7 +584,7 @@ public final class ToolPanel {
 		if (active != null) {
 			open(new ConfirmScreen(host.get(),
 					"Tout effacer sur « " + active.meta().name() + " » ?",
-					active.size() + " bloc(s) seront effacés (Ctrl+Z pour annuler).",
+					active.size() + " bloc(s) et " + active.zoneCount() + " zone(s) seront effacés (Ctrl+Z pour annuler).",
 					() -> layers.clearLayer(active.meta().id())));
 		}
 	}

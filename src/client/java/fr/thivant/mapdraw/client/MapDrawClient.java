@@ -118,6 +118,7 @@ public final class MapDrawClient implements ClientModInitializer {
 		if (!dim.equals(currentDimension)) {
 			currentDimension = dim;
 			tools.setTool(tools.tool());
+			tools.deselect();
 			renderer.setDimension(dim);
 		}
 

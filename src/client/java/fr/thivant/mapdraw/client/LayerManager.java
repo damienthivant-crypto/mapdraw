@@ -17,6 +17,7 @@ import fr.thivant.mapdraw.core.CellValue;
 import fr.thivant.mapdraw.core.LongIntMap;
 import fr.thivant.mapdraw.core.LayerData;
 import fr.thivant.mapdraw.core.LayerMeta;
+import fr.thivant.mapdraw.core.Zone;
 
 /**
  * État client de tous les calques (privés + partagés), historique annuler/rétablir,
@@ -33,6 +34,12 @@ public final class LayerManager {
 
 		void sendCells(UUID layer, long[] keys, int[] colors);
 
+		default void sendZone(UUID layer, Zone zone) {
+		}
+
+		default void sendZoneDelete(UUID layer, UUID zone) {
+		}
+
 		int maxCellsPerPacket();
 	}
 
@@ -44,12 +51,24 @@ public final class LayerManager {
 		}
 	}
 
-	/** Une action annulable : pour chaque case, valeur avant / après (EMPTY = vide). Stockage primitif. */
+	/** Modification d'une zone : état avant / après (null = absente). */
+	record ZoneChange(UUID id, Zone before, Zone after) {
+	}
+
+	/** Une zone et son calque (résultat d'une sélection). */
+	public record ZoneRef(LayerData layer, Zone zone) {
+	}
+
+	/**
+	 * Une action annulable : pour chaque case, valeur avant / après (EMPTY = vide), stockage primitif ;
+	 * plus les zones créées / modifiées / supprimées.
+	 */
 	static final class Action {
 		static final int EMPTY = -2;
 		final UUID layer;
 		final LongIntMap before = new LongIntMap();
 		final LongIntMap after = new LongIntMap();
+		final List<ZoneChange> zones = new ArrayList<>();
 
 		Action(UUID layer) {
 			this.layer = layer;
@@ -64,6 +83,10 @@ public final class LayerManager {
 		}
 
 		boolean isEmpty() {
+			if (!zones.isEmpty()) {
+				return false;
+			}
+
 			int[] changed = {0};
 			after.forEach((k, v) -> {
 				if (before.get(k) != v) {
@@ -256,7 +279,11 @@ public final class LayerManager {
 
 		for (LayerData layer : layers.values()) {
 			if (!hidden.contains(layer.meta().id()) && layer.meta().dimension().equals(dimension)) {
-				merged.putAll(layer.cellsInChunk(chunkKey));
+				layer.forEachInChunk(chunkKey, (k, v) -> {
+					if (!CellValue.hiddenOnMap(v)) {
+						merged.put(k, v);
+					}
+				});
 			}
 		}
 
@@ -272,7 +299,11 @@ public final class LayerManager {
 
 		for (LayerData layer : layers.values()) {
 			if (!hidden.contains(layer.meta().id()) && layer.meta().dimension().equals(dimension)) {
-				layer.forEachInChunk(chunkKey, (k, v) -> grid[((CellKey.z(k) & 15) << 4) | (CellKey.x(k) & 15)] = v);
+				layer.forEachInChunk(chunkKey, (k, v) -> {
+					if (!CellValue.hiddenOnMap(v)) {
+						grid[((CellKey.z(k) & 15) << 4) | (CellKey.x(k) & 15)] = v;
+					}
+				});
 			}
 		}
 	}
@@ -285,7 +316,11 @@ public final class LayerManager {
 			UUID id = layer.meta().id();
 
 			if (!hidden.contains(id) && !worldHidden.contains(id) && layer.meta().dimension().equals(dimension)) {
-				merged.putAll(layer.cellsInChunk(chunkKey));
+				layer.forEachInChunk(chunkKey, (k, v) -> {
+					if (!CellValue.hiddenInWorld(v)) {
+						merged.put(k, v);
+					}
+				});
 			}
 		}
 
@@ -295,7 +330,7 @@ public final class LayerManager {
 	/** Le chunk contient-il au moins une case visible ? */
 	public boolean hasCells(String dimension, long chunkKey) {
 		for (LayerData layer : layers.values()) {
-			if (!hidden.contains(layer.meta().id()) && layer.meta().dimension().equals(dimension) && layer.chunkKeys().contains(chunkKey)) {
+			if (!hidden.contains(layer.meta().id()) && layer.meta().dimension().equals(dimension) && layer.hasChunk(chunkKey)) {
 				return true;
 			}
 		}
@@ -342,8 +377,15 @@ public final class LayerManager {
 
 	// ------------------------------------------------------------------ gestion des calques
 
+	/** Ajoute un calque à la liste (active le calcul des blocs des zones). */
+	private void adopt(LayerData layer) {
+		layer.enableZoneRaster();
+		layers.put(layer.meta().id(), layer);
+	}
+
 	public LayerData createLayer(String name, String dimension) {
 		LayerData layer = new LayerData(new LayerMeta(UUID.randomUUID(), name, selfId, selfName, dimension, false));
+		layer.enableZoneRaster();
 		layers.put(layer.meta().id(), layer);
 		active = layer.meta().id();
 		privateDirty = true;
@@ -355,8 +397,14 @@ public final class LayerManager {
 	/** Ajoute un calque importé depuis un fichier : il devient un calque privé du joueur. */
 	public LayerData importLayer(LayerData source, String dimension) {
 		LayerData layer = new LayerData(new LayerMeta(UUID.randomUUID(), source.meta().name(), selfId, selfName, dimension, false));
-		source.forEach(layer::set);
-		layers.put(layer.meta().id(), layer);
+		source.forEach(layer::setRaw);
+
+		for (Zone z : source.zones()) {
+			layer.putZone(new Zone(UUID.randomUUID(), z.kind(), z.points(), z.color(), z.width(), z.filled(), z.opacity(),
+					z.showWorld(), z.showMap(), z.name()));
+		}
+
+		adopt(layer);
 		active = layer.meta().id();
 		privateDirty = true;
 		viewDirty = true;
@@ -371,7 +419,7 @@ public final class LayerManager {
 			layer.setMeta(layer.meta().withShared(false));
 		}
 
-		layers.put(layer.meta().id(), layer);
+		adopt(layer);
 		notifyAllChunks(layer);
 		notifyLayers();
 	}
@@ -483,6 +531,10 @@ public final class LayerManager {
 			sink.sendMeta(layer.meta());
 			LongIntMap out = outgoing.computeIfAbsent(id, k -> new LongIntMap(layer.size()));
 			layer.forEach(out::put);
+
+			for (Zone z : layer.zones()) {
+				sink.sendZone(id, z);
+			}
 		} else {
 			outgoing.remove(id);
 			sendQueue.removeIf(p -> p.layer().equals(id));
@@ -564,12 +616,7 @@ public final class LayerManager {
 		current = null;
 
 		if (!done.isEmpty()) {
-			undo.push(done);
-			redo.clear();
-
-			while (undo.size() > HISTORY_LIMIT) {
-				undo.removeLast();
-			}
+			pushHistory(done);
 		}
 	}
 
@@ -664,8 +711,172 @@ public final class LayerManager {
 				consumer.accept(k, LayerData.ERASE);
 			}
 		});
+
+		Action action = current;
+
+		for (Zone z : new ArrayList<>(layer.zones())) {
+			applyZone(layer, z.id(), null);
+
+			if (action != null) {
+				action.zones.add(new ZoneChange(z.id(), z, null));
+			}
+		}
+
 		endAction();
 		return true;
+	}
+
+	// ------------------------------------------------------------------ zones
+
+	/** Zone sous le bloc (x, z) dans les calques visibles de la dimension (le plus haut d'abord). */
+	public ZoneRef zoneAt(String dimension, int x, int z) {
+		List<LayerData> list = new ArrayList<>(layers.values());
+		ZoneRef readOnly = null;
+
+		for (int i = list.size() - 1; i >= 0; i--) {
+			LayerData layer = list.get(i);
+
+			if (hidden.contains(layer.meta().id()) || !layer.meta().dimension().equals(dimension)) {
+				continue;
+			}
+
+			Zone zone = layer.zoneAt(x, z);
+
+			if (zone != null) {
+				if (canEdit(layer)) {
+					return new ZoneRef(layer, zone);
+				}
+
+				if (readOnly == null) {
+					readOnly = new ZoneRef(layer, zone);
+				}
+			}
+		}
+
+		return readOnly;
+	}
+
+	/** Retrouve une zone par identifiant (null si elle a disparu). */
+	public ZoneRef findZone(UUID layerId, UUID zoneId) {
+		LayerData layer = layers.get(layerId);
+		Zone zone = layer == null ? null : layer.zone(zoneId);
+		return zone == null ? null : new ZoneRef(layer, zone);
+	}
+
+	/** Crée ou modifie une zone (annulable). */
+	public boolean putZone(UUID layerId, Zone zone) {
+		LayerData layer = layers.get(layerId);
+
+		if (layer == null || !canEdit(layer)) {
+			message("Ce calque est en lecture seule.");
+			return false;
+		}
+
+		Zone before = layer.zone(zone.id());
+
+		if (zone.equals(before)) {
+			return false;
+		}
+
+		if (!zone.valid()) {
+			message("Forme trop grande (4096 blocs de côté max) ou trop de sommets.");
+			return false;
+		}
+
+		endAction();
+		Action action = new Action(layerId);
+		action.zones.add(new ZoneChange(zone.id(), before, zone));
+		applyZone(layer, zone.id(), zone);
+		pushHistory(action);
+		return true;
+	}
+
+	/** Supprime une zone (annulable). */
+	public boolean deleteZone(UUID layerId, UUID zoneId) {
+		LayerData layer = layers.get(layerId);
+
+		if (layer == null || !canEdit(layer)) {
+			message("Ce calque est en lecture seule.");
+			return false;
+		}
+
+		Zone before = layer.zone(zoneId);
+
+		if (before == null) {
+			return false;
+		}
+
+		endAction();
+		Action action = new Action(layerId);
+		action.zones.add(new ZoneChange(zoneId, before, null));
+		applyZone(layer, zoneId, null);
+		pushHistory(action);
+		return true;
+	}
+
+	private void pushHistory(Action action) {
+		undo.push(action);
+		redo.clear();
+
+		while (undo.size() > HISTORY_LIMIT) {
+			undo.removeLast();
+		}
+	}
+
+	/** Applique localement une zone (null = suppression), l'envoie si besoin, rafraîchit l'affichage. */
+	private void applyZone(LayerData layer, UUID zoneId, Zone zone) {
+		Set<Long> touched = zone == null ? layer.removeZone(zoneId) : layer.putZone(zone);
+		UUID id = layer.meta().id();
+
+		if (layer.meta().shared() && serverMode && sink != null) {
+			if (zone == null) {
+				sink.sendZoneDelete(id, zoneId);
+			} else {
+				sink.sendZone(id, zone);
+			}
+		}
+
+		if (!layer.meta().shared()) {
+			privateDirty = true;
+		}
+
+		if (!hidden.contains(id)) {
+			for (long chunk : touched) {
+				notifyChunk(layer.meta().dimension(), chunk);
+			}
+		}
+	}
+
+	public void remoteZone(UUID layerId, Zone zone) {
+		LayerData layer = layers.get(layerId);
+
+		if (layer == null) {
+			return;
+		}
+
+		Set<Long> touched = layer.putZone(zone);
+
+		if (!hidden.contains(layerId)) {
+			for (long chunk : touched) {
+				notifyChunk(layer.meta().dimension(), chunk);
+			}
+		}
+	}
+
+	public void remoteZoneDelete(UUID layerId, UUID zoneId) {
+		LayerData layer = layers.get(layerId);
+
+		if (layer == null) {
+			return;
+		}
+
+		Set<Long> touched = layer.removeZone(zoneId);
+
+		if (!hidden.contains(layerId)) {
+			for (long chunk : touched) {
+				notifyChunk(layer.meta().dimension(), chunk);
+			}
+		}
 	}
 
 	public boolean undo() {
@@ -702,6 +913,17 @@ public final class LayerManager {
 			});
 
 			afterEdit(layer, touched);
+
+			List<ZoneChange> changes = new ArrayList<>(action.zones);
+
+			if (backwards) {
+				java.util.Collections.reverse(changes);
+			}
+
+			for (ZoneChange c : changes) {
+				applyZone(layer, c.id(), backwards ? c.before() : c.after());
+			}
+
 			to.push(action);
 			return true;
 		}
@@ -801,7 +1023,7 @@ public final class LayerManager {
 
 		if (layer == null) {
 			layer = new LayerData(meta.withShared(true));
-			layers.put(meta.id(), layer);
+			adopt(layer);
 		} else {
 			layer.setMeta(meta.withShared(true));
 		}

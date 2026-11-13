@@ -1,9 +1,15 @@
 package fr.thivant.mapdraw.core;
 
+import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 
 /**
  * Un calque : métadonnées + cases, indexées par chunk pour reconstruire vite les meshes.
@@ -17,6 +23,12 @@ public final class LayerData {
 	private LayerMeta meta;
 	private final Map<Long, LongIntMap> chunks = new HashMap<>();
 	private int size;
+
+	// Zones (formes vectorielles) et leurs blocs calculés, uniquement côté client (rasterize = true).
+	private final LinkedHashMap<UUID, Zone> zones = new LinkedHashMap<>();
+	private boolean rasterize;
+	private final Map<UUID, Map<Long, LongIntMap>> zoneRaster = new HashMap<>();
+	private final Map<Long, LongIntMap> zoneMerged = new HashMap<>();
 
 	public LayerData(LayerMeta meta) {
 		this.meta = meta;
@@ -95,35 +107,206 @@ public final class LayerData {
 		return old == LongIntMap.NONE ? null : old;
 	}
 
+	/** Efface les traits (les zones sont gérées à part). */
 	public void clear() {
 		chunks.clear();
 		size = 0;
 	}
 
+	/** Chunks contenant des traits ou des zones. */
 	public Set<Long> chunkKeys() {
-		return Collections.unmodifiableSet(chunks.keySet());
+		if (zoneMerged.isEmpty()) {
+			return Collections.unmodifiableSet(chunks.keySet());
+		}
+
+		Set<Long> all = new HashSet<>(chunks.keySet());
+		all.addAll(zoneMerged.keySet());
+		return all;
 	}
 
-	/** Copie des cases d'un chunk (au plus 256). */
-	public Map<Long, Integer> cellsInChunk(long chunkKey) {
-		LongIntMap chunk = chunks.get(chunkKey);
+	public boolean hasChunk(long chunkKey) {
+		return chunks.containsKey(chunkKey) || zoneMerged.containsKey(chunkKey);
+	}
 
-		if (chunk == null) {
+	/** Copie des cases d'un chunk (traits puis zones par-dessus, au plus 256). */
+	public Map<Long, Integer> cellsInChunk(long chunkKey) {
+		if (!hasChunk(chunkKey)) {
 			return Collections.emptyMap();
 		}
 
-		Map<Long, Integer> out = new HashMap<>(chunk.size() * 2);
-		chunk.forEach(out::put);
+		Map<Long, Integer> out = new HashMap<>();
+		forEachInChunk(chunkKey, out::put);
 		return out;
 	}
 
-	/** Parcourt les cases d'un chunk sans copie. */
+	/** Parcourt les cases d'un chunk sans copie (traits, puis blocs des zones qui passent au-dessus). */
 	public void forEachInChunk(long chunkKey, LongIntMap.Visitor visitor) {
 		LongIntMap chunk = chunks.get(chunkKey);
 
 		if (chunk != null) {
 			chunk.forEach(visitor);
 		}
+
+		LongIntMap z = zoneMerged.get(chunkKey);
+
+		if (z != null) {
+			z.forEach(visitor);
+		}
+	}
+
+	// ------------------------------------------------------------------ zones
+
+	public Collection<Zone> zones() {
+		return Collections.unmodifiableCollection(zones.values());
+	}
+
+	public Zone zone(UUID id) {
+		return zones.get(id);
+	}
+
+	public int zoneCount() {
+		return zones.size();
+	}
+
+	/** Active le calcul des blocs des zones (client). */
+	public void enableZoneRaster() {
+		if (!rasterize) {
+			rasterize = true;
+
+			for (Zone z : zones.values()) {
+				zoneRaster.put(z.id(), rasterOf(z));
+			}
+
+			rebuildMerged(allZoneChunks());
+		}
+	}
+
+	/**
+	 * Ajoute ou remplace une zone.
+	 *
+	 * @return les chunks dont l'affichage change
+	 */
+	public Set<Long> putZone(Zone zone) {
+		Set<Long> touched = new HashSet<>();
+		Map<Long, LongIntMap> old = zoneRaster.remove(zone.id());
+
+		if (old != null) {
+			touched.addAll(old.keySet());
+		}
+
+		zones.put(zone.id(), zone);
+
+		if (rasterize) {
+			Map<Long, LongIntMap> raster = rasterOf(zone);
+			zoneRaster.put(zone.id(), raster);
+			touched.addAll(raster.keySet());
+			rebuildMerged(touched);
+		}
+
+		return touched;
+	}
+
+	public Set<Long> removeZone(UUID id) {
+		Set<Long> touched = new HashSet<>();
+
+		if (zones.remove(id) == null) {
+			return touched;
+		}
+
+		Map<Long, LongIntMap> old = zoneRaster.remove(id);
+
+		if (old != null) {
+			touched.addAll(old.keySet());
+			rebuildMerged(touched);
+		}
+
+		return touched;
+	}
+
+	public void clearZones() {
+		zones.clear();
+		zoneRaster.clear();
+		zoneMerged.clear();
+	}
+
+	private Set<Long> allZoneChunks() {
+		Set<Long> all = new HashSet<>();
+
+		for (Map<Long, LongIntMap> r : zoneRaster.values()) {
+			all.addAll(r.keySet());
+		}
+
+		return all;
+	}
+
+	private static Map<Long, LongIntMap> rasterOf(Zone zone) {
+		Map<Long, LongIntMap> byChunk = new HashMap<>();
+
+		try {
+			Shapes.Shape shape = zone.shape();
+			int inner = zone.interiorValue();
+			int outer = zone.outlineValue();
+
+			for (long k : shape.interior()) {
+				byChunk.computeIfAbsent(CellKey.chunkOf(k), c -> new LongIntMap(64)).put(k, inner);
+			}
+
+			for (long k : shape.outline()) {
+				byChunk.computeIfAbsent(CellKey.chunkOf(k), c -> new LongIntMap(64)).put(k, outer);
+			}
+		} catch (Shapes.TooLargeException e) {
+			// zone trop grande : rien à afficher
+		}
+
+		return byChunk;
+	}
+
+	/** Recalcule la fusion des zones (dans l'ordre de création) pour les chunks donnés. */
+	private void rebuildMerged(Collection<Long> chunkKeys) {
+		for (long chunk : chunkKeys) {
+			LongIntMap merged = null;
+
+			for (Zone z : zones.values()) {
+				Map<Long, LongIntMap> raster = zoneRaster.get(z.id());
+				LongIntMap part = raster == null ? null : raster.get(chunk);
+
+				if (part != null) {
+					if (merged == null) {
+						merged = new LongIntMap(part.size() * 2);
+					}
+
+					part.forEach(merged::put);
+				}
+			}
+
+			if (merged == null) {
+				zoneMerged.remove(chunk);
+			} else {
+				zoneMerged.put(chunk, merged);
+			}
+		}
+	}
+
+	/** Zone la plus haute contenant le bloc (x, z) — les zones visibles sur la carte d'abord — ou null. */
+	public Zone zoneAt(int x, int z) {
+		List<Zone> list = new ArrayList<>(zones.values());
+		Zone hidden = null;
+
+		for (int i = list.size() - 1; i >= 0; i--) {
+			Zone zone = list.get(i);
+
+			if (zone.contains(x, z)) {
+				if (zone.showMap()) {
+					return zone;
+				}
+
+				if (hidden == null) {
+					hidden = zone;
+				}
+			}
+		}
+
+		return hidden;
 	}
 
 	public void forEach(LongIntMap.Visitor visitor) {

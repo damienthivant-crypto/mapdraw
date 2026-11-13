@@ -76,6 +76,10 @@ final class JourneyMapBridge implements LayerManager.Listener {
 	private float lastOpacity = -1f;
 	private long lastPreviewEnd = Long.MIN_VALUE;
 	private long lastPreviewTime;
+	private int lastPreviewVersion = -1;
+	private String lastMouseDim;
+	private int lastMouseX;
+	private int lastMouseZ;
 	/** Dernier bouton souris (convention SDL de Minecraft) reçu par l'écran JourneyMap. */
 	private int lastButton = -1;
 
@@ -132,6 +136,19 @@ final class JourneyMapBridge implements LayerManager.Listener {
 				if (Keys.isRedo(event)) {
 					layers.redo();
 					return false;
+				}
+
+				if (tools.tool() == DrawTools.Tool.SELECT && tools.selected() != null) {
+					int dx = Keys.arrowDx(event);
+					int dz = Keys.arrowDz(event);
+
+					if ((dx != 0 || dz != 0) && tools.nudge(dx, dz)) {
+						return false;
+					}
+
+					if (Keys.isDelete(event) && tools.deleteSelected()) {
+						return false;
+					}
 				}
 
 				if (Keys.isBackspace(event) && tools.removeLastPoint()) {
@@ -203,15 +220,10 @@ final class JourneyMapBridge implements LayerManager.Listener {
 
 		if (isLeft(event.getButton())) {
 			tools.press(dimId(event.getLevel()), pos.getX(), pos.getZ());
-			lastPreviewEnd = Long.MIN_VALUE;
-
-			if (!tools.hasPending()) {
-				clearPreview();
-			}
-
+			refreshPreview(dimId(event.getLevel()), pos.getX(), pos.getZ());
 			event.cancel();
 		} else if (isRight(event.getButton()) && (tools.finishPolygon(dimId(event.getLevel())) || tools.cancel())) {
-			clearPreview();
+			refreshPreview(dimId(event.getLevel()), pos.getX(), pos.getZ());
 			event.cancel();
 		}
 	}
@@ -223,8 +235,12 @@ final class JourneyMapBridge implements LayerManager.Listener {
 
 		BlockPos pos = event.getLocation();
 
-		if (tools.isStroking()) {
+		if (tools.isStroking() || tools.isMoving()) {
 			tools.drag(pos.getX(), pos.getZ());
+
+			if (tools.isMoving() && System.currentTimeMillis() - lastPreviewTime >= 60) {
+				refreshPreview(dimId(event.getLevel()), pos.getX(), pos.getZ());
+			}
 		} else if (isLeft(event.getButton()) && (tools.tool() == DrawTools.Tool.FREEHAND || tools.tool() == DrawTools.Tool.ERASER)) {
 			// Au cas où JourneyMap n'émettrait le clic qu'au relâchement : le trait démarre au premier glisser.
 			tools.press(dimId(event.getLevel()), pos.getX(), pos.getZ());
@@ -244,21 +260,33 @@ final class JourneyMapBridge implements LayerManager.Listener {
 		BlockPos pos = event.getLocation();
 		long end = CellKey.pack(pos.getX(), pos.getZ());
 		long now = System.currentTimeMillis();
+		lastMouseDim = dimId(event.getLevel());
+		lastMouseX = pos.getX();
+		lastMouseZ = pos.getZ();
 
-		if (end == lastPreviewEnd || now - lastPreviewTime < 60) {
+		if ((end == lastPreviewEnd && tools.version() == lastPreviewVersion) || now - lastPreviewTime < 60) {
 			return;
 		}
 
-		lastPreviewEnd = end;
-		lastPreviewTime = now;
-		Map<Long, Integer> cells = tools.preview(pos.getX(), pos.getZ());
+		refreshPreview(lastMouseDim, pos.getX(), pos.getZ());
+	}
+
+	/** Recalcule l'aperçu (forme en cours, zone sélectionnée) pour la position du curseur. */
+	private void refreshPreview(String dim, int x, int z) {
+		lastMouseDim = dim;
+		lastMouseX = x;
+		lastMouseZ = z;
+		Map<Long, Integer> cells = tools.preview(x, z);
 		clearPreview();
+		lastPreviewEnd = CellKey.pack(x, z);
+		lastPreviewTime = System.currentTimeMillis();
+		lastPreviewVersion = tools.version();
 
 		if (cells == null || cells.isEmpty()) {
 			return;
 		}
 
-		preview.addAll(buildOverlays(dimId(event.getLevel()), cells, 0.45f, "MapDraw (aperçu)"));
+		preview.addAll(buildOverlays(dim, cells, 0.8f, "MapDraw (aperçu)"));
 		showAll(preview);
 	}
 
@@ -269,6 +297,7 @@ final class JourneyMapBridge implements LayerManager.Listener {
 
 		preview.clear();
 		lastPreviewEnd = Long.MIN_VALUE;
+		lastPreviewVersion = -1;
 	}
 
 	private void onAddonButtons(FullscreenDisplayEvent.AddonButtonDisplayEvent event) {
@@ -357,6 +386,12 @@ final class JourneyMapBridge implements LayerManager.Listener {
 
 		if (!mapping || dimension.isEmpty() || !api.playerAccepts(MapDraw.MOD_ID, DisplayType.Polygon)) {
 			return;
+		}
+
+		// Sélection modifiée (clic, panneau, annuler…) sans mouvement de souris : on rafraîchit l'aperçu.
+		if (drawMode && lastMouseDim != null && tools.version() != lastPreviewVersion
+				&& System.currentTimeMillis() - lastPreviewTime >= 60) {
+			refreshPreview(lastMouseDim, lastMouseX, lastMouseZ);
 		}
 
 		long deadline = System.nanoTime() + 6_000_000L; // 6 ms par tick au maximum
@@ -459,7 +494,7 @@ final class JourneyMapBridge implements LayerManager.Listener {
 		for (Map.Entry<Integer, Area> e : byColor.entrySet()) {
 			int value = e.getKey();
 			int rgb = CellValue.rgb(value);
-			float fill = CellValue.isSurface(value) ? surfaceOpacity : opacity;
+			float fill = CellValue.opacity(value, CellValue.isSurface(value) ? surfaceOpacity : opacity);
 			ShapeProperties props = new ShapeProperties()
 					.setFillColor(rgb).setFillOpacity(fill)
 					.setStrokeColor(rgb).setStrokeOpacity(0f).setStrokeWidth(1f);

@@ -41,12 +41,12 @@ public final class LayerJson {
 	}
 
 	/** Copie figée d'un calque, prête à être écrite sur un autre thread. */
-	public record Snapshot(LayerMeta meta, long[] keys, int[] values) {
+	public record Snapshot(LayerMeta meta, long[] keys, int[] values, List<Zone> zones) {
 	}
 
 	public static Snapshot snapshot(LayerData layer) {
 		LayerData.Cells cells = layer.toArrays();
-		return new Snapshot(layer.meta(), cells.keys(), cells.values());
+		return new Snapshot(layer.meta(), cells.keys(), cells.values(), new ArrayList<>(layer.zones()));
 	}
 
 	public static List<Snapshot> snapshots(Collection<LayerData> layers) {
@@ -78,6 +78,94 @@ public final class LayerJson {
 		}
 
 		w.endArray();
+		w.name("zones").beginArray();
+
+		for (Zone z : s.zones()) {
+			writeZone(w, z);
+		}
+
+		w.endArray();
+	}
+
+	private static void writeZone(JsonWriter w, Zone z) throws IOException {
+		w.beginObject();
+		w.name("id").value(z.id().toString());
+		w.name("kind").value(z.kind().name());
+		w.name("points").beginArray();
+
+		for (long p : z.points()) {
+			w.value(CellKey.x(p));
+			w.value(CellKey.z(p));
+		}
+
+		w.endArray();
+		w.name("color").value(z.color());
+		w.name("width").value(z.width());
+		w.name("filled").value(z.filled());
+		w.name("opacity").value(z.opacity());
+		w.name("showWorld").value(z.showWorld());
+		w.name("showMap").value(z.showMap());
+		w.name("name").value(z.name());
+		w.endObject();
+	}
+
+	private static Zone readZone(JsonReader r) throws IOException {
+		UUID id = UUID.randomUUID();
+		Zone.Kind kind = Zone.Kind.RECTANGLE;
+		List<Long> points = new ArrayList<>();
+		int color = 0xFFFFFF;
+		int width = 1;
+		boolean filled = true;
+		int opacity = 0;
+		boolean showWorld = true;
+		boolean showMap = true;
+		String name = "";
+		r.beginObject();
+
+		while (r.hasNext()) {
+			switch (r.nextName()) {
+				case "id" -> id = parseUuid(r.nextString(), id);
+				case "kind" -> {
+					try {
+						kind = Zone.Kind.valueOf(r.nextString());
+					} catch (IllegalArgumentException e) {
+						kind = Zone.Kind.POLYGON;
+					}
+				}
+				case "points" -> {
+					r.beginArray();
+
+					while (r.hasNext()) {
+						int x = r.nextInt();
+						int z = r.hasNext() ? r.nextInt() : 0;
+						points.add(CellKey.pack(x, z));
+					}
+
+					r.endArray();
+				}
+				case "color" -> color = r.nextInt();
+				case "width" -> width = r.nextInt();
+				case "filled" -> filled = r.nextBoolean();
+				case "opacity" -> opacity = r.nextInt();
+				case "showWorld" -> showWorld = r.nextBoolean();
+				case "showMap" -> showMap = r.nextBoolean();
+				case "name" -> name = r.nextString();
+				default -> r.skipValue();
+			}
+		}
+
+		r.endObject();
+		long[] arr = new long[points.size()];
+
+		for (int i = 0; i < arr.length; i++) {
+			arr[i] = points.get(i);
+		}
+
+		if ((kind != Zone.Kind.POLYGON && arr.length != 2) || arr.length < 2) {
+			return null;
+		}
+
+		return new Zone(id, kind, arr, color, width, filled, opacity, showWorld, showMap, name);
 	}
 
 	public static void writeLayers(Path file, Collection<LayerData> layers) throws IOException {
@@ -144,6 +232,7 @@ public final class LayerJson {
 		String dimension = "minecraft:overworld";
 		boolean shared = false;
 		LongIntMap cells = new LongIntMap();
+		List<Zone> zones = new ArrayList<>();
 		LayerData nested = null;
 		r.beginObject();
 
@@ -165,6 +254,19 @@ public final class LayerJson {
 						int z = r.hasNext() ? r.nextInt() : 0;
 						int v = r.hasNext() ? r.nextInt() : 0;
 						cells.put(CellKey.pack(x, z), v & CellValue.MASK);
+					}
+
+					r.endArray();
+				}
+				case "zones" -> {
+					r.beginArray();
+
+					while (r.hasNext()) {
+						Zone z = readZone(r);
+
+						if (z != null) {
+							zones.add(z);
+						}
 					}
 
 					r.endArray();
@@ -195,6 +297,11 @@ public final class LayerJson {
 
 		LayerData layer = new LayerData(new LayerMeta(id, name, owner, ownerName, dimension, shared));
 		cells.forEach(layer::setRaw);
+
+		for (Zone z : zones) {
+			layer.putZone(z);
+		}
+
 		return layer;
 	}
 

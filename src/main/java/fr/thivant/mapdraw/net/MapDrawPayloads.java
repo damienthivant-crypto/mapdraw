@@ -10,6 +10,7 @@ import net.fabricmc.fabric.api.networking.v1.PayloadTypeRegistry;
 
 import fr.thivant.mapdraw.MapDraw;
 import fr.thivant.mapdraw.core.LayerMeta;
+import fr.thivant.mapdraw.core.Zone;
 
 /**
  * Tous les paquets réseau du mod.
@@ -20,7 +21,7 @@ import fr.thivant.mapdraw.core.LayerMeta;
  */
 public final class MapDrawPayloads {
 	/** Version du protocole : à incrémenter si le format change. */
-	public static final int PROTOCOL = 2;
+	public static final int PROTOCOL = 3;
 	/** Cases max par paquet client -> serveur (limite vanilla ~32 Ko par paquet entrant). */
 	public static final int MAX_CELLS_C2S = 2000;
 	/** Cases max par paquet serveur -> client. */
@@ -35,10 +36,14 @@ public final class MapDrawPayloads {
 		PayloadTypeRegistry.clientboundPlay().register(LayerDeleteS2C.TYPE, LayerDeleteS2C.CODEC);
 		PayloadTypeRegistry.clientboundPlay().register(CellsS2C.TYPE, CellsS2C.CODEC);
 		PayloadTypeRegistry.clientboundPlay().register(MessageS2C.TYPE, MessageS2C.CODEC);
+		PayloadTypeRegistry.clientboundPlay().register(ZoneS2C.TYPE, ZoneS2C.CODEC);
+		PayloadTypeRegistry.clientboundPlay().register(ZoneDeleteS2C.TYPE, ZoneDeleteS2C.CODEC);
 
 		PayloadTypeRegistry.serverboundPlay().register(LayerMetaC2S.TYPE, LayerMetaC2S.CODEC);
 		PayloadTypeRegistry.serverboundPlay().register(LayerDeleteC2S.TYPE, LayerDeleteC2S.CODEC);
 		PayloadTypeRegistry.serverboundPlay().register(CellsC2S.TYPE, CellsC2S.CODEC);
+		PayloadTypeRegistry.serverboundPlay().register(ZoneC2S.TYPE, ZoneC2S.CODEC);
+		PayloadTypeRegistry.serverboundPlay().register(ZoneDeleteC2S.TYPE, ZoneDeleteC2S.CODEC);
 	}
 
 	// ------------------------------------------------------------------ helpers
@@ -60,6 +65,55 @@ public final class MapDrawPayloads {
 		String dimension = buf.readUtf(256);
 		boolean shared = buf.readBoolean();
 		return new LayerMeta(id, name, owner, ownerName, dimension, shared);
+	}
+
+	static void writeZone(RegistryFriendlyByteBuf buf, Zone z) {
+		buf.writeUUID(z.id());
+		buf.writeVarInt(z.kind().ordinal());
+		buf.writeVarInt(z.points().length);
+
+		for (long p : z.points()) {
+			buf.writeLong(p);
+		}
+
+		buf.writeInt(z.color());
+		buf.writeVarInt(z.width());
+		buf.writeBoolean(z.filled());
+		buf.writeVarInt(z.opacity());
+		buf.writeBoolean(z.showWorld());
+		buf.writeBoolean(z.showMap());
+		buf.writeUtf(z.name(), 48);
+	}
+
+	static Zone readZone(RegistryFriendlyByteBuf buf) {
+		UUID id = buf.readUUID();
+		int k = buf.readVarInt();
+		Zone.Kind[] kinds = Zone.Kind.values();
+
+		if (k < 0 || k >= kinds.length) {
+			throw new IllegalArgumentException("MapDraw : type de zone inconnu");
+		}
+
+		int n = buf.readVarInt();
+
+		if (n < 0 || n > Zone.MAX_POINTS) {
+			throw new IllegalArgumentException("MapDraw : zone trop complexe");
+		}
+
+		long[] pts = new long[n];
+
+		for (int i = 0; i < n; i++) {
+			pts[i] = buf.readLong();
+		}
+
+		int color = buf.readInt();
+		int width = buf.readVarInt();
+		boolean filled = buf.readBoolean();
+		int opacity = buf.readVarInt();
+		boolean showWorld = buf.readBoolean();
+		boolean showMap = buf.readBoolean();
+		String name = buf.readUtf(48);
+		return new Zone(id, kinds[k], pts, color, width, filled, opacity, showWorld, showMap, name);
 	}
 
 	static void writeCells(RegistryFriendlyByteBuf buf, long[] keys, int[] colors) {
@@ -168,6 +222,38 @@ public final class MapDrawPayloads {
 		}
 	}
 
+	/** Création ou modification d'une zone. */
+	public record ZoneS2C(UUID layer, Zone zone) implements CustomPacketPayload {
+		public static final Type<ZoneS2C> TYPE = new Type<>(MapDraw.id("zone_s2c"));
+		public static final StreamCodec<RegistryFriendlyByteBuf, ZoneS2C> CODEC = StreamCodec.of(
+				(buf, p) -> {
+					buf.writeUUID(p.layer);
+					writeZone(buf, p.zone);
+				},
+				buf -> new ZoneS2C(buf.readUUID(), readZone(buf)));
+
+		@Override
+		public Type<? extends CustomPacketPayload> type() {
+			return TYPE;
+		}
+	}
+
+	/** Suppression d'une zone. */
+	public record ZoneDeleteS2C(UUID layer, UUID zone) implements CustomPacketPayload {
+		public static final Type<ZoneDeleteS2C> TYPE = new Type<>(MapDraw.id("zone_delete_s2c"));
+		public static final StreamCodec<RegistryFriendlyByteBuf, ZoneDeleteS2C> CODEC = StreamCodec.of(
+				(buf, p) -> {
+					buf.writeUUID(p.layer);
+					buf.writeUUID(p.zone);
+				},
+				buf -> new ZoneDeleteS2C(buf.readUUID(), buf.readUUID()));
+
+		@Override
+		public Type<? extends CustomPacketPayload> type() {
+			return TYPE;
+		}
+	}
+
 	// ------------------------------------------------------------------ C2S
 
 	/** Le client crée ou modifie (nom, partage) un calque partagé. */
@@ -210,6 +296,38 @@ public final class MapDrawPayloads {
 					long[] keys = readKeys(buf, colors, MAX_CELLS_C2S);
 					return new CellsC2S(layer, keys, colors[0]);
 				});
+
+		@Override
+		public Type<? extends CustomPacketPayload> type() {
+			return TYPE;
+		}
+	}
+
+	/** Le client crée ou modifie une zone. */
+	public record ZoneC2S(UUID layer, Zone zone) implements CustomPacketPayload {
+		public static final Type<ZoneC2S> TYPE = new Type<>(MapDraw.id("zone_c2s"));
+		public static final StreamCodec<RegistryFriendlyByteBuf, ZoneC2S> CODEC = StreamCodec.of(
+				(buf, p) -> {
+					buf.writeUUID(p.layer);
+					writeZone(buf, p.zone);
+				},
+				buf -> new ZoneC2S(buf.readUUID(), readZone(buf)));
+
+		@Override
+		public Type<? extends CustomPacketPayload> type() {
+			return TYPE;
+		}
+	}
+
+	/** Le client supprime une zone. */
+	public record ZoneDeleteC2S(UUID layer, UUID zone) implements CustomPacketPayload {
+		public static final Type<ZoneDeleteC2S> TYPE = new Type<>(MapDraw.id("zone_delete_c2s"));
+		public static final StreamCodec<RegistryFriendlyByteBuf, ZoneDeleteC2S> CODEC = StreamCodec.of(
+				(buf, p) -> {
+					buf.writeUUID(p.layer);
+					buf.writeUUID(p.zone);
+				},
+				buf -> new ZoneDeleteC2S(buf.readUUID(), buf.readUUID()));
 
 		@Override
 		public Type<? extends CustomPacketPayload> type() {

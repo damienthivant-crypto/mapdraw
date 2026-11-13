@@ -94,6 +94,9 @@ Les raccourcis suivent la disposition du clavier : `Ctrl+Z` fonctionne aussi en 
 - **Rectangle** et **Cercle / ellipse** : un clic sur un coin, un clic sur le coin opposé (aperçu en direct, clic droit : annuler).
 - **Polygone** : un clic par sommet ; pour fermer, recliquer le premier point, faire un clic droit ou appuyer sur Entrée. Retour arrière retire le dernier point.
 - **Formes : surface teintée / contour seul** : en mode surface, l'intérieur est teinté (translucide sur la carte, plaque fine posée au sol dans le monde) et le contour reste net. Idéal pour placer des maisons, des parcelles, des quartiers.
+- **Zones** : chaque rectangle, cercle ou polygone devient une *zone* qu'on peut reprendre à tout moment (elle est sélectionnée dès sa création).
+- **Sélect.** (sélection / déplacement) : cliquez une zone pour la sélectionner (contour blanc), glissez-la pour la déplacer, flèches = 1 bloc (Maj + flèches = 10), Suppr ou Retour arrière = supprimer, clic droit pendant le glisser = annuler.
+- **Réglages de la zone** (section « Zone » du panneau) : intérieur rempli ou vide, opacité propre (auto ou 10 à 100 %), épaisseur du contour, visible sur la carte, visible dans le monde, couleur (avec l'outil Sélect., cliquer une couleur l'applique directement), supprimer. Tout est annulable (Ctrl+Z).
 - **Couleur** : palette de 12 couleurs ou code hexadécimal (`#E53935`).
 - **Épaisseur** : de 1 à 5 blocs, avec un pinceau carré.
 

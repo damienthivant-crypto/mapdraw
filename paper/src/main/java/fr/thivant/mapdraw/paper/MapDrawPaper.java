@@ -27,6 +27,7 @@ import fr.thivant.mapdraw.core.LayerData;
 import fr.thivant.mapdraw.core.LayerJson;
 import fr.thivant.mapdraw.core.LayerMeta;
 import fr.thivant.mapdraw.core.LongIntMap;
+import fr.thivant.mapdraw.core.Zone;
 
 /**
  * Version Paper du serveur MapDraw : même protocole réseau que le mod Fabric.
@@ -36,11 +37,12 @@ import fr.thivant.mapdraw.core.LongIntMap;
  * Les joueurs doivent avoir le mod MapDraw côté client.
  */
 public final class MapDrawPaper extends JavaPlugin implements PluginMessageListener, Listener {
-	static final int PROTOCOL = 2;
+	static final int PROTOCOL = 3;
 	private static final int MAX_CELLS_C2S = 2000;
 	private static final int MAX_CELLS_S2C = 20000;
 	private static final int MAX_LAYERS_PER_PLAYER = 64;
 	private static final int MAX_CELLS_PER_LAYER = 2_000_000;
+	private static final int MAX_ZONES_PER_LAYER = 2000;
 	private static final int MAX_BROADCASTS_PER_TICK = 6;
 	private static final int SAVE_INTERVAL_TICKS = 200;
 	private static final UUID NOBODY = new UUID(0L, 0L);
@@ -54,6 +56,10 @@ public final class MapDrawPaper extends JavaPlugin implements PluginMessageListe
 	static final String LAYER_META_C2S = "mapdraw:layer_meta_c2s";
 	static final String LAYER_DELETE_C2S = "mapdraw:layer_delete_c2s";
 	static final String CELLS_C2S = "mapdraw:cells_c2s";
+	static final String ZONE_S2C = "mapdraw:zone_s2c";
+	static final String ZONE_DELETE_S2C = "mapdraw:zone_delete_s2c";
+	static final String ZONE_C2S = "mapdraw:zone_c2s";
+	static final String ZONE_DELETE_C2S = "mapdraw:zone_delete_c2s";
 
 	private final Map<UUID, LayerData> layers = new LinkedHashMap<>();
 	private final Set<String> dirtyDimensions = new HashSet<>();
@@ -77,11 +83,11 @@ public final class MapDrawPaper extends JavaPlugin implements PluginMessageListe
 
 		var messenger = getServer().getMessenger();
 
-		for (String out : List.of(HELLO, LAYER_META_S2C, LAYER_DELETE_S2C, CELLS_S2C, MESSAGE)) {
+		for (String out : List.of(HELLO, LAYER_META_S2C, LAYER_DELETE_S2C, CELLS_S2C, MESSAGE, ZONE_S2C, ZONE_DELETE_S2C)) {
 			messenger.registerOutgoingPluginChannel(this, out);
 		}
 
-		for (String in : List.of(LAYER_META_C2S, LAYER_DELETE_C2S, CELLS_C2S)) {
+		for (String in : List.of(LAYER_META_C2S, LAYER_DELETE_C2S, CELLS_C2S, ZONE_C2S, ZONE_DELETE_C2S)) {
 			messenger.registerIncomingPluginChannel(this, in, this);
 		}
 
@@ -163,6 +169,14 @@ public final class MapDrawPaper extends JavaPlugin implements PluginMessageListe
 					}
 
 					onCells(player, layer, keys, colors);
+				}
+				case ZONE_C2S -> {
+					UUID layer = in.uuid();
+					onZone(player, layer, in.zone());
+				}
+				case ZONE_DELETE_C2S -> {
+					UUID layer = in.uuid();
+					onZoneDelete(player, layer, in.uuid());
 				}
 				default -> {
 				}
@@ -270,6 +284,48 @@ public final class MapDrawPaper extends JavaPlugin implements PluginMessageListe
 		}
 	}
 
+	private void onZone(Player player, UUID layerId, Zone zone) {
+		LayerData layer = layers.get(layerId);
+
+		if (layer == null) {
+			return;
+		}
+
+		if (!canEdit(player, layer)) {
+			error(player, "Vous ne pouvez pas modifier « " + layer.meta().name() + " » (propriétaire : " + layer.meta().ownerName() + ").");
+			resync(player, layer);
+			return;
+		}
+
+		if (!zone.valid() || (layer.zone(zone.id()) == null && layer.zoneCount() >= MAX_ZONES_PER_LAYER)) {
+			error(player, "Zone refusée (trop grande, ou " + MAX_ZONES_PER_LAYER + " zones max par calque).");
+			resync(player, layer);
+			return;
+		}
+
+		layer.putZone(zone);
+		dirtyDimensions.add(layer.meta().dimension());
+		broadcast(ZONE_S2C, new Wire.Writer().uuid(layerId).zone(zone).bytes(), player.getUniqueId());
+	}
+
+	private void onZoneDelete(Player player, UUID layerId, UUID zoneId) {
+		LayerData layer = layers.get(layerId);
+
+		if (layer == null || layer.zone(zoneId) == null) {
+			return;
+		}
+
+		if (!canEdit(player, layer)) {
+			error(player, "Vous ne pouvez pas modifier « " + layer.meta().name() + " ».");
+			resync(player, layer);
+			return;
+		}
+
+		layer.removeZone(zoneId);
+		dirtyDimensions.add(layer.meta().dimension());
+		broadcast(ZONE_DELETE_S2C, new Wire.Writer().uuid(layerId).uuid(zoneId).bytes(), player.getUniqueId());
+	}
+
 	// ------------------------------------------------------------------ envoi
 
 	private void flush() {
@@ -335,6 +391,10 @@ public final class MapDrawPaper extends JavaPlugin implements PluginMessageListe
 
 		for (byte[] packet : cellPackets(layer.meta().id(), all)) {
 			send(player, CELLS_S2C, packet);
+		}
+
+		for (Zone zone : layer.zones()) {
+			send(player, ZONE_S2C, new Wire.Writer().uuid(layer.meta().id()).zone(zone).bytes());
 		}
 	}
 
