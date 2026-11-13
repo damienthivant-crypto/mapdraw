@@ -1,0 +1,6 @@
+name: MapDraw
+version: '${version}'
+main: fr.thivant.mapdraw.paper.MapDrawPaper
+api-version: '26.3'
+author: Monsieur THIVANT
+description: Serveur MapDraw pour Paper - stocke et synchronise les calques partagés des joueurs qui ont le mod MapDraw (Fabric).

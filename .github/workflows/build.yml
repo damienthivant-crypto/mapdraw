@@ -21,12 +21,15 @@ jobs:
       - uses: actions/upload-artifact@v7
         with:
           name: mapdraw-jar
-          path: build/libs/mapdraw-*.jar
+          path: |
+            build/libs/mapdraw-*.jar
+            paper/build/libs/mapdraw-paper-*.jar
       - name: publier la release « latest »
         if: github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           JAR=$(ls build/libs/*.jar | grep -v -- '-sources' | head -1)
+          PAPER=$(ls paper/build/libs/mapdraw-paper-*.jar | head -1)
           gh release delete latest --yes --cleanup-tag || true
-          gh release create latest "$JAR" --title "MapDraw – dernier build" --notes "Build automatique du commit ${GITHUB_SHA::7}. Télécharger le .jar ci-dessous et le mettre dans .minecraft/mods (et mods/ du serveur)." --target "$GITHUB_SHA"
+          gh release create latest "$JAR" "$PAPER" --title "MapDraw – dernier build" --notes "Build automatique du commit ${GITHUB_SHA::7}. mapdraw-1.0.0.jar : mod client (et serveur Fabric) dans mods/. mapdraw-paper-1.0.0.jar : plugin pour serveur Paper, dans plugins/." --target "$GITHUB_SHA"

@@ -10,3 +10,6 @@ pluginManagement {
 }
 
 rootProject.name = 'mapdraw'
+
+// Plugin Paper (côté serveur Paper/Spigot)
+include 'paper'

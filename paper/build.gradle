@@ -1,0 +1,50 @@
+plugins {
+	id 'java'
+}
+
+version = rootProject.mod_version
+group = rootProject.maven_group
+
+base {
+	archivesName = "mapdraw-paper"
+}
+
+repositories {
+	mavenCentral()
+	maven {
+		name = "PaperMC"
+		url = "https://repo.papermc.io/repository/maven-public/"
+	}
+}
+
+dependencies {
+	compileOnly "io.papermc.paper:paper-api:${rootProject.paper_api_version}"
+}
+
+// On réutilise le modèle commun (calques, JSON) du mod, sans aucune classe Minecraft.
+sourceSets {
+	main {
+		java {
+			srcDir "${rootProject.projectDir}/src/main/java"
+			include "fr/thivant/mapdraw/core/**"
+			include "fr/thivant/mapdraw/paper/**"
+		}
+	}
+}
+
+java {
+	toolchain.languageVersion = JavaLanguageVersion.of(25)
+}
+
+tasks.withType(JavaCompile).configureEach {
+	options.encoding = "UTF-8"
+	options.release = 25
+}
+
+processResources {
+	def v = project.version
+	inputs.property "version", v
+	filesMatching("plugin.yml") {
+		expand "version": v
+	}
+}

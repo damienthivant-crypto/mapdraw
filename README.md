@@ -59,6 +59,12 @@ Cloth Config n'est **pas** nécessaire : le menu de réglages est intégré au m
 3. Redémarre le serveur. Le journal doit afficher `MapDraw initialisé (protocole 1)`.
 4. Les calques partagés sont enregistrés dans `<monde>/mapdraw/<dimension>.json`, par exemple `world/mapdraw/minecraft_overworld.json`. Pour sauvegarder les tracés, il suffit de sauvegarder ce dossier.
 
+### Serveur Paper
+Paper ne charge pas les mods Fabric : utilise le **plugin** `mapdraw-paper-1.0.0.jar` (même release), à mettre dans `plugins/`.
+Il parle le même protocole que le mod : les joueurs gardent le mod MapDraw côté client. Les calques partagés sont stockés dans
+`plugins/MapDraw/layers/<dimension>.json` ; chaque monde (multi-mondes) a sa propre dimension, donc ses propres calques.
+Fabric API n'est pas nécessaire côté serveur Paper.
+
 En solo, le serveur intégré embarque le mod : le partage fonctionne aussi en LAN.
 
 ---
