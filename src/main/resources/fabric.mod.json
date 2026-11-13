@@ -1,0 +1,37 @@
+{
+	"schemaVersion": 1,
+	"id": "mapdraw",
+	"version": "${version}",
+	"name": "MapDraw",
+	"description": "Dessinez sur la carte (JourneyMap ou carte intégrée), affichez vos tracés dans le monde en blocs fantômes et partagez-les entre joueurs.",
+	"authors": [
+		"Monsieur THIVANT"
+	],
+	"license": "MIT",
+	"icon": "assets/mapdraw/icon.png",
+	"environment": "*",
+	"entrypoints": {
+		"main": [
+			"fr.thivant.mapdraw.MapDraw"
+		],
+		"client": [
+			"fr.thivant.mapdraw.client.MapDrawClient"
+		],
+		"journeymap": [
+			"fr.thivant.mapdraw.client.jm.MapDrawJourneyMapPlugin"
+		],
+		"modmenu": [
+			"fr.thivant.mapdraw.client.compat.ModMenuIntegration"
+		]
+	},
+	"depends": {
+		"fabricloader": ">=0.20.1",
+		"minecraft": "~26.3",
+		"java": ">=25",
+		"fabric-api": "*"
+	},
+	"suggests": {
+		"journeymap": "*",
+		"modmenu": "*"
+	}
+}

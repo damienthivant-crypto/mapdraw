@@ -1,0 +1,92 @@
+plugins {
+	id 'net.fabricmc.fabric-loom' version "${loom_version}"
+}
+
+version = project.mod_version
+group = project.maven_group
+
+base {
+	archivesName = project.archives_base_name
+}
+
+repositories {
+	mavenCentral()
+	// JourneyMap API
+	maven {
+		name = "BlameJared (JourneyMap API)"
+		url = 'https://maven.blamejared.com'
+		content { includeGroup "info.journeymap" }
+	}
+	maven {
+		name = "JourneyMap (secours)"
+		url = "https://jm.gserv.me/repository/maven-public/"
+		content { includeGroup "info.journeymap" }
+	}
+	// Mod Menu
+	maven {
+		name = "TerraformersMC"
+		url = 'https://maven.terraformersmc.com/releases/'
+		content { includeGroupAndSubgroups "com.terraformersmc" }
+	}
+}
+
+configurations.configureEach {
+	resolutionStrategy.cacheChangingModulesFor 0, 'seconds'
+}
+
+loom {
+	splitEnvironmentSourceSets()
+
+	mods {
+		"mapdraw" {
+			sourceSet sourceSets.main
+			sourceSet sourceSets.client
+		}
+	}
+}
+
+dependencies {
+	minecraft "com.mojang:minecraft:${project.minecraft_version}"
+	implementation "net.fabricmc:fabric-loader:${project.loader_version}"
+	implementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
+
+	// Intégrations optionnelles : compilation seulement (dépendances "souples")
+	clientCompileOnly("info.journeymap:journeymap-api-fabric:${project.journeymap_api_version}") { changing = true }
+	clientCompileOnly "com.terraformersmc:modmenu:${project.modmenu_version}"
+
+	// Tests unitaires (rastérisation, JSON)
+	testImplementation platform("org.junit:junit-bom:5.11.4")
+	testImplementation "org.junit.jupiter:junit-jupiter"
+	testRuntimeOnly "org.junit.platform:junit-platform-launcher"
+}
+
+test {
+	useJUnitPlatform()
+}
+
+processResources {
+	def version = project.version
+	inputs.property "version", version
+
+	filesMatching("fabric.mod.json") {
+		expand "version": version
+	}
+}
+
+tasks.withType(JavaCompile).configureEach {
+	it.options.release = 25
+	it.options.encoding = "UTF-8"
+}
+
+java {
+	sourceCompatibility = JavaVersion.VERSION_25
+	targetCompatibility = JavaVersion.VERSION_25
+}
+
+jar {
+	def projectName = project.name
+	inputs.property "projectName", projectName
+	from("LICENSE") {
+		rename { "${it}_$projectName" }
+	}
+}
